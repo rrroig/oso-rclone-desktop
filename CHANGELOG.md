@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.1 — 2026-08-17
+
+Both fixes come from the first day of real use.
+
+- **The delete guard is sized to the folder.** As a plain percentage it was
+  useless on small folders — deleting one file out of two is 50%, so a two-file
+  folder asked for approval on every single deletion. The configured share is
+  now floored so that at least five files must be at stake before a run is
+  stopped. Large folders behave exactly as before.
+- **The guard can be switched off per pair**, under Advanced → Safety net, for
+  once the setup is trusted. The trash folder and the question asked when a
+  folder disappears still apply.
+- **A pair waiting for its first sync says so.** Two-way sync needs one baseline
+  pass, which is deliberately not automatic; enabling a folder now offers to run
+  it there and then, instead of leaving the pair idle and silent.
+- Sync logs keep two older generations rather than one.
+
 ## 1.1.0 — 2026-08-17
 
 First release used against a real Google Drive account, which is where most of
