@@ -302,7 +302,7 @@ sudo apt install ./dist/oso-rclone-desktop_*.deb
 
 ## Licence and trademarks
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Release notes in [CHANGELOG.md](CHANGELOG.md).
 
 rclone is a separate project (MIT licensed) and is not bundled here; the installer fetches
 it from rclone.org or your distribution.
