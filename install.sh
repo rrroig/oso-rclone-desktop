@@ -5,6 +5,7 @@
 #   ./install.sh --system     install for every user (/usr/local, needs sudo)
 #   ./install.sh --no-deps    skip apt/rclone installation
 #   ./install.sh --autostart  also enable start-at-login
+#   ./install.sh --no-context-menu   skip the file-manager right-click entries
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,12 +14,14 @@ PKG="oso_rclone_desktop"
 
 MODE="user"
 DO_DEPS=1
+DO_CONTEXT=1
 DO_AUTOSTART=0
 for arg in "$@"; do
   case "$arg" in
     --system) MODE="system" ;;
     --user) MODE="user" ;;
     --no-deps) DO_DEPS=0 ;;
+    --no-context-menu) DO_CONTEXT=0 ;;
     --autostart) DO_AUTOSTART=1 ;;
     -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
@@ -172,6 +175,71 @@ ok "Installed to $LIBDIR"
 if [ "$MODE" = "user" ] && ! echo ":$PATH:" | grep -q ":$BINDIR:"; then
   warn "$BINDIR is not in your PATH. Add this to ~/.profile:"
   echo '        export PATH="$HOME/.local/bin:$PATH"'
+fi
+
+# --------------------------------------------------------------- file managers
+
+# Right-click entries are per-user by nature, so they go under $HOME even for a
+# system-wide install. Each file manager wants a different mechanism.
+if [ "$DO_CONTEXT" = "1" ]; then
+  installed_for=""
+
+  # Nemo (Cinnamon / Linux Mint) — native action file, appears at top level
+  if command -v nemo >/dev/null 2>&1; then
+    mkdir -p "$HOME/.local/share/nemo/actions"
+    install -m 0644 "$SRC_DIR/contextmenu/$APP_ID.nemo_action" \
+      "$HOME/.local/share/nemo/actions/"
+    installed_for="$installed_for Nemo"
+  fi
+
+  # Caja (MATE) — scripts folder
+  if command -v caja >/dev/null 2>&1; then
+    mkdir -p "$HOME/.config/caja/scripts"
+    install -m 0755 "$SRC_DIR/contextmenu/Sync with Google Drive" \
+      "$HOME/.config/caja/scripts/"
+    installed_for="$installed_for Caja"
+  fi
+
+  # Nautilus (GNOME) — a real menu entry when python3-nautilus is present,
+  # otherwise a script under the Scripts submenu (no dependencies).
+  if command -v nautilus >/dev/null 2>&1; then
+    if python3 -c "import gi; gi.require_version('Nautilus', '4.0')" 2>/dev/null ||
+       python3 -c "import gi; gi.require_version('Nautilus', '3.0')" 2>/dev/null; then
+      mkdir -p "$HOME/.local/share/nautilus-python/extensions"
+      install -m 0644 "$SRC_DIR/contextmenu/nautilus_extension.py" \
+        "$HOME/.local/share/nautilus-python/extensions/oso_rclone_desktop.py"
+      installed_for="$installed_for Nautilus"
+    else
+      mkdir -p "$HOME/.local/share/nautilus/scripts"
+      install -m 0755 "$SRC_DIR/contextmenu/Sync with Google Drive" \
+        "$HOME/.local/share/nautilus/scripts/"
+      installed_for="$installed_for Nautilus(script)"
+      warn "For a top-level Nautilus entry instead of Scripts →, install python3-nautilus."
+    fi
+  fi
+
+  # Dolphin (KDE) — service menu, both the current and the legacy location
+  if command -v dolphin >/dev/null 2>&1; then
+    for dir in "$HOME/.local/share/kio/servicemenus" \
+               "$HOME/.local/share/kservices5/ServiceMenus"; do
+      mkdir -p "$dir"
+      install -m 0755 "$SRC_DIR/contextmenu/$APP_ID-servicemenu.desktop" "$dir/"
+    done
+    installed_for="$installed_for Dolphin"
+  fi
+
+  if [ -n "$installed_for" ]; then
+    ok "Right-click entry added for:$installed_for"
+    if command -v nautilus >/dev/null 2>&1; then
+      echo "   (restart the file manager to see it: nautilus -q / nemo -q)"
+    fi
+  else
+    warn "No supported file manager found — skipped the right-click entry."
+  fi
+  if command -v thunar >/dev/null 2>&1; then
+    echo "   Thunar: add a custom action manually with"
+    echo "     Edit → Configure custom actions → +, command: $APP_ID --sync-path %f"
+  fi
 fi
 
 # --------------------------------------------------------------- autostart

@@ -1,6 +1,7 @@
 """Application entry point: tray menu, notifications, single-instance guard."""
 
 import fcntl
+import json
 import os
 import signal
 import sys
@@ -14,7 +15,7 @@ try:
 except (ValueError, ImportError):  # pragma: no cover - optional
     Notify = None
 
-from gi.repository import GLib, Gtk  # noqa: E402
+from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
 from . import APP_ID, APP_NAME, __version__, engine as eng, rclone, tray, util  # noqa: E402
 from .config import Config, State  # noqa: E402
@@ -317,10 +318,86 @@ class Application:
         os.environ["RCLONE_CONFIG_PASS"] = password
         return True
 
+    # -------------------------------------------------- requests from file managers
+
+    def watch_requests(self):
+        try:
+            folder = Gio.File.new_for_path(util.REQUEST_DIR)
+            self._request_monitor = folder.monitor_directory(
+                Gio.FileMonitorFlags.NONE, None
+            )
+            self._request_monitor.connect(
+                "changed",
+                lambda *_a: GLib.timeout_add(200, self.process_requests),
+            )
+        except GLib.Error:
+            self._request_monitor = None
+            GLib.timeout_add_seconds(5, self._poll_requests)
+        self.process_requests()
+
+    def _poll_requests(self):
+        self.process_requests()
+        return GLib.SOURCE_CONTINUE
+
+    def process_requests(self):
+        try:
+            names = sorted(os.listdir(util.REQUEST_DIR))
+        except OSError:
+            return GLib.SOURCE_REMOVE
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(util.REQUEST_DIR, name)
+            try:
+                with open(path) as fh:
+                    request = json.load(fh)
+                os.remove(path)
+            except (OSError, ValueError):
+                continue
+            self._handle_request(request)
+        return GLib.SOURCE_REMOVE
+
+    def _handle_request(self, request):
+        target = os.path.abspath(os.path.expanduser(request.get("path") or ""))
+        action = request.get("action")
+        if not target:
+            return
+        runner = self._runner_for_path(target)
+        if action == "sync" and runner:
+            runner.request_sync("manual")
+            self.notify(runner.name, "Syncing “%s”…" % os.path.basename(target), "low")
+        elif action in ("sync", "add"):
+            self.add_folder(target)
+
+    def _runner_for_path(self, target):
+        for runner in self.engine.runners:
+            local = runner.local_path.rstrip("/")
+            if local and (target == local or target.startswith(local + "/")):
+                return runner
+        return None
+
+    def add_folder(self, target):
+        """Offer to sync a folder the user picked in their file manager."""
+        if os.path.isfile(target):
+            target = os.path.dirname(target)
+        self.open_settings(page=1)
+        window = self.settings_window
+        if not rclone.listremotes():
+            self.open_settings(page=0)
+            self.notify(
+                APP_NAME,
+                "Connect a Google Drive account first, then add “%s”."
+                % os.path.basename(target),
+                "normal",
+            )
+            return
+        window.add_job_for_path(target)
+
     def run(self):
         self.unlock_config()
         self.engine.start()
         self.rebuild_menu()
+        self.watch_requests()
         if not rclone.is_installed() or not self.config.jobs:
             GLib.timeout_add_seconds(1, self._first_run)
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -347,9 +424,13 @@ def main(argv=None):
     if "--help" in argv or "-h" in argv:
         print(
             "%s %s\n\n"
-            "Usage: %s [--settings] [--sync] [--version]\n\n"
-            "  --settings   open the configuration window on start\n"
-            "  --sync       sync every configured folder once and exit\n"
+            "Usage: %s [--settings] [--sync] [--sync-path DIR] [--add-folder DIR]\n\n"
+            "  --settings          open the configuration window on start\n"
+            "  --sync              sync every configured folder once and exit\n"
+            "  --sync-path DIR     sync the pair that contains DIR, or offer to add it\n"
+            "  --add-folder DIR    open the settings ready to sync DIR\n"
+            "  --version\n\n"
+            "The last two are what the file-manager right-click actions call.\n"
             % (APP_NAME, __version__, APP_ID)
         )
         return 0
@@ -358,6 +439,15 @@ def main(argv=None):
 
     if "--sync" in argv:
         return _headless_sync()
+
+    for flag, action in (("--sync-path", "sync"), ("--add-folder", "add")):
+        if flag in argv:
+            index = argv.index(flag)
+            target = argv[index + 1] if len(argv) > index + 1 else os.getcwd()
+            util.write_request(action, target)
+            argv = argv[:index] + argv[index + 2 :]
+            # A running instance picks the request up through its inbox watcher;
+            # if there is none, this process becomes it and handles it at startup.
 
     app = Application()
     if not app.acquire_lock():

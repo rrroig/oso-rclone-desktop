@@ -1,0 +1,17 @@
+#!/bin/sh
+# Right-click → Scripts → "Sync with Google Drive"
+# Installed into the Nautilus/Caja scripts folder by install.sh.
+set -eu
+
+target=""
+for var in "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}" "${CAJA_SCRIPT_SELECTED_FILE_PATHS:-}"; do
+  if [ -n "$var" ]; then
+    target=$(printf '%s\n' "$var" | head -n 1)
+    break
+  fi
+done
+
+# No selection: act on the folder being displayed.
+[ -n "$target" ] || target="$(pwd)"
+
+exec oso-rclone-desktop --sync-path "$target"

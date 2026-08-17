@@ -21,6 +21,14 @@ for prefix in "$HOME/.local" "/usr/local"; do
 done
 
 rm -f "$HOME/.config/autostart/$APP_ID.desktop"
+
+# file-manager right-click entries
+rm -f "$HOME/.local/share/nemo/actions/$APP_ID.nemo_action" \
+      "$HOME/.local/share/nautilus-python/extensions/oso_rclone_desktop.py" \
+      "$HOME/.local/share/nautilus/scripts/Sync with Google Drive" \
+      "$HOME/.config/caja/scripts/Sync with Google Drive" \
+      "$HOME/.local/share/kio/servicemenus/$APP_ID-servicemenu.desktop" \
+      "$HOME/.local/share/kservices5/ServiceMenus/$APP_ID-servicemenu.desktop" 2>/dev/null || true
 pkill -f "oso_rclone_desktop" 2>/dev/null || true
 
 if [ "$PURGE" = "1" ]; then

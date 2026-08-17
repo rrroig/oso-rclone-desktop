@@ -170,8 +170,15 @@ class JobRunner:
 
     def status_text(self):
         if self.safety_blocked:
-            return "Deletion blocked — %d item(s) need your approval" % len(
-                self.blocked_deletions
+            if self.pending_dir_deletions:
+                return "%d deleted folder(s) need a decision" % len(
+                    self.pending_dir_deletions
+                )
+            count = len(self.blocked_deletions)
+            return (
+                "Deletion blocked — %d item(s) need your approval" % count
+                if count
+                else "Deletion blocked — waiting for your decision"
             )
         if self.state == SYNCING and self.progress:
             return "Syncing… %s" % self.progress

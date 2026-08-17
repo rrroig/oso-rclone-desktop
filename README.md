@@ -151,6 +151,27 @@ subfolder — use the **Browse…** button to pick or create one, for example `W
 that subtree is synced; everything else in your Drive is never read, moved or deleted.
 This is also what makes the remote trash possible.
 
+## File-manager right-click
+
+`install.sh` adds a **Sync with Google Drive** entry to whichever file managers it finds,
+using each one's native mechanism:
+
+| File manager | Mechanism | Where it appears |
+|---|---|---|
+| Nemo (Cinnamon / Mint) | `.nemo_action` | top level of the context menu |
+| Dolphin (KDE) | service menu | top level of the context menu |
+| Nautilus (GNOME) | nautilus-python extension | top level — needs `python3-nautilus` |
+| Nautilus / Caja (MATE) | script | under **Scripts →** (no dependencies) |
+| Thunar (Xfce) | custom action | added by hand, the installer prints the command |
+
+Right-click a folder and the entry does the sensible thing: if the folder is already part
+of a synced pair it syncs it now; if it is not, the settings window opens with a new pair
+prepared for it — **switched off**, so nothing is transferred until you review the account
+and destination and press Apply.
+
+Skip it with `./install.sh --no-context-menu`. Restart the file manager (`nautilus -q`,
+`nemo -q`) for the entry to show up.
+
 ## Conflicts
 
 A conflict is when the *same file* changed on *both* sides between two syncs.
@@ -204,6 +225,8 @@ guess and reports **"First sync required"** rather than deleting anything; run
 oso-rclone-desktop              # start the tray app
 oso-rclone-desktop --settings   # start with the settings window open
 oso-rclone-desktop --sync       # sync every folder once and exit (cron/systemd)
+oso-rclone-desktop --sync-path DIR    # sync the pair containing DIR (file-manager action)
+oso-rclone-desktop --add-folder DIR   # open the settings ready to sync DIR
 oso-rclone-desktop --version
 ```
 

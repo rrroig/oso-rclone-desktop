@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=inode/directory;
+Actions=osoRcloneSync;
+X-KDE-Priority=TopLevel
+Icon=oso-rclone-desktop
+
+[Desktop Action osoRcloneSync]
+Name=Sync with Google Drive
+Icon=oso-rclone-desktop
+Exec=oso-rclone-desktop --sync-path %f

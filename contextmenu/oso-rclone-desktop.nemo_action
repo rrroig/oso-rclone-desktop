@@ -1,0 +1,8 @@
+[Nemo Action]
+Name=Sync with Google Drive
+Comment=Sync this folder with OSO Rclone Desktop, or set it up
+Exec=oso-rclone-desktop --sync-path %F
+Icon-Name=oso-rclone-desktop
+Selection=s
+Extensions=dir;
+Quote=double

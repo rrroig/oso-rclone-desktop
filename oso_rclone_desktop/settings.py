@@ -1210,6 +1210,46 @@ class SettingsWindow(Gtk.Window):
         self._load_job(job["id"])
         self.app.update_ui()
 
+    def add_job_for_path(self, local_path):
+        """Create (or focus) a sync pair for a folder chosen in the file manager."""
+        for job in self.config.jobs:
+            if os.path.abspath(os.path.expanduser(job.get("local_path") or "")) == os.path.abspath(
+                local_path
+            ):
+                self._current_job_id = job["id"]
+                self.refresh_jobs()
+                self.present()
+                return
+        remotes = rclone.listremotes()
+        if not remotes:
+            self.notebook.set_current_page(0)
+            return
+        if self._current_job_id:
+            self._save_current_job(reload_engine=False)
+        job = cfgmod.new_job(
+            name=os.path.basename(local_path.rstrip("/")) or remotes[0][0],
+            remote=remotes[0][0],
+            remote_path=os.path.basename(local_path.rstrip("/")),
+            local_path=local_path,
+            enabled=False,  # nothing happens until the user reviews and enables it
+        )
+        self.config.add_job(job)
+        self.config.save()
+        self.engine.reload()
+        self._current_job_id = job["id"]
+        self.refresh_jobs()
+        self._load_job(job["id"])
+        self.app.update_ui()
+        self.notebook.set_current_page(1)
+        self.present()
+        _message(
+            self,
+            Gtk.MessageType.INFO,
+            "Ready to sync “%s”" % os.path.basename(local_path.rstrip("/")),
+            "Check the account and the folder in Drive, tick “Keep this folder in sync”, "
+            "then press Apply. Nothing is transferred until you do.",
+        )
+
     def _on_remove_job(self, _btn):
         if not self._current_job_id:
             return

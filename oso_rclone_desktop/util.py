@@ -1,10 +1,12 @@
 """Paths, small helpers, desktop integration."""
 
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+import uuid
 
 from gi.repository import GLib
 
@@ -26,6 +28,8 @@ TRASH_DIR = os.path.join(DATA_DIR, "trash")
 #: same idea on the remote side, always OUTSIDE the synced folder
 REMOTE_TRASH = ".oso-trash"
 LOG_DIR = os.path.join(STATE_DIR, "logs")
+#: file managers drop one-shot requests here for the running instance to pick up
+REQUEST_DIR = os.path.join(STATE_DIR, "requests")
 AUTOSTART_DIR = os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "autostart")
 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -37,7 +41,7 @@ ICON_DIR = os.path.join(PKG_DIR, "icons")
 
 
 def ensure_dirs():
-    for d in (CONFIG_DIR, STATE_DIR, CACHE_DIR, LOG_DIR, DATA_DIR, TRASH_DIR):
+    for d in (CONFIG_DIR, STATE_DIR, CACHE_DIR, LOG_DIR, DATA_DIR, TRASH_DIR, REQUEST_DIR):
         os.makedirs(d, exist_ok=True)
 
 
@@ -158,6 +162,19 @@ def launcher_command():
 
 
 # ---------------------------------------------------------------- misc
+
+
+def write_request(action, path):
+    """Queue a request for the running instance (used by file-manager actions)."""
+    os.makedirs(REQUEST_DIR, exist_ok=True)
+    payload = json.dumps({"action": action, "path": os.path.abspath(path)})
+    name = "%s-%d-%s.json" % (action, os.getpid(), uuid.uuid4().hex[:6])
+    target = os.path.join(REQUEST_DIR, name)
+    tmp = target + ".part"
+    with open(tmp, "w") as fh:
+        fh.write(payload)
+    os.replace(tmp, target)  # appears atomically, so the watcher never reads a half file
+    return target
 
 
 def human_size(num):
