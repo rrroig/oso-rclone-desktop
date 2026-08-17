@@ -1,10 +1,13 @@
 """Application entry point: tray menu, notifications, single-instance guard."""
 
+import faulthandler
 import fcntl
 import json
 import os
 import signal
 import sys
+import threading
+import time
 
 import gi
 
@@ -65,6 +68,51 @@ class Application:
         self.menu = Gtk.Menu()
         self.tray = tray.TrayIcon(self.menu, on_activate=self.open_settings)
         self.rebuild_menu()
+
+    # -------------------------------------------------- freeze watchdog
+
+    #: how long the UI may stall before we consider it frozen and dump stacks
+    FREEZE_SECONDS = 4.0
+
+    def install_watchdog(self):
+        """Record where the app was when the interface stops responding.
+
+        A frozen desktop app tells you nothing after the fact: the user force
+        quits it and the process dies without a trace. A heartbeat on the main
+        loop plus a plain thread watching it means the next freeze writes the
+        stack of every thread into the log by itself.
+        """
+        self._freeze_log = os.path.join(util.LOG_DIR, "freeze.log")
+        os.makedirs(util.LOG_DIR, exist_ok=True)
+        self._heartbeat = time.monotonic()
+        self._freeze_reported = False
+        faulthandler.enable(all_threads=True)
+        GLib.timeout_add(500, self._beat)
+        threading.Thread(target=self._watch_main_loop, daemon=True).start()
+
+    def _beat(self):
+        self._heartbeat = time.monotonic()
+        return GLib.SOURCE_CONTINUE
+
+    def _watch_main_loop(self):
+        while True:
+            time.sleep(1.0)
+            lag = time.monotonic() - self._heartbeat
+            if lag < 2.0:
+                self._freeze_reported = False
+                continue
+            if lag >= self.FREEZE_SECONDS and not self._freeze_reported:
+                self._freeze_reported = True
+                try:
+                    with open(self._freeze_log, "a") as fh:
+                        fh.write(
+                            "\n===== interface stalled %.1fs at %s =====\n"
+                            % (lag, time.strftime("%Y-%m-%d %H:%M:%S"))
+                        )
+                        faulthandler.dump_traceback(file=fh, all_threads=True)
+                        fh.flush()
+                except OSError:
+                    pass
 
     # -------------------------------------------------- single instance
 
@@ -407,6 +455,7 @@ class Application:
         window.add_job_for_path(target)
 
     def run(self):
+        self.install_watchdog()
         self.unlock_config()
         self.engine.start()
         self.rebuild_menu()

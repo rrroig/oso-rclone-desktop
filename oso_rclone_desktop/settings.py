@@ -488,15 +488,17 @@ class ChooseFoldersDialog(Gtk.Dialog):
     one listing per folder the user actually opens.
     """
 
-    COL_ACTIVE, COL_LABEL, COL_PATH, COL_LOADED = range(4)
+    COL_ACTIVE, COL_LABEL, COL_PATH, COL_LOADED, COL_EXISTING = range(5)
 
-    def __init__(self, parent, remote, default_base=None):
+    def __init__(self, parent, remote, default_base=None, existing=()):
         super().__init__(
             title="What should be synced from %s?" % remote,
             transient_for=parent,
             modal=True,
         )
         self.remote = remote
+        #: folders already covered by a pair — shown ticked and left alone
+        self.existing = {(p or "").strip("/") for p in existing}
         self.set_default_size(640, 560)
         self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
         self.ok_btn = self.add_button("Add selected", Gtk.ResponseType.OK)
@@ -527,7 +529,7 @@ class ChooseFoldersDialog(Gtk.Dialog):
         base_row.pack_start(browse, False, False, 0)
         box.pack_start(base_row, False, False, 0)
 
-        self.store = Gtk.TreeStore(bool, str, str, bool)
+        self.store = Gtk.TreeStore(bool, str, str, bool, bool)
         self.view = Gtk.TreeView(model=self.store, headers_visible=False)
         toggle = Gtk.CellRendererToggle()
         toggle.connect("toggled", self._on_toggled)
@@ -598,8 +600,12 @@ class ChooseFoldersDialog(Gtk.Dialog):
             if not path and name == util.REMOTE_TRASH:
                 continue  # our own trash folder is not something to sync
             child_path = "%s/%s" % (path, name) if path else name
-            row = self.store.append(parent_iter, [False, name, child_path, False])
-            self.store.append(row, [False, "…", "", False])  # lazy placeholder
+            known = child_path in self.existing
+            label = "%s   — already synced" % name if known else name
+            row = self.store.append(
+                parent_iter, [known, label, child_path, False, known]
+            )
+            self.store.append(row, [False, "…", "", False, False])  # lazy placeholder
 
         if error:
             self.status.set_markup(
@@ -626,6 +632,8 @@ class ChooseFoldersDialog(Gtk.Dialog):
 
     def _on_toggled(self, _cell, path):
         treeiter = self.store.get_iter(path)
+        if self.store[treeiter][self.COL_EXISTING]:
+            return  # already has a pair; untick it in Synced folders instead
         value = not self.store[treeiter][self.COL_ACTIVE]
         self.store[treeiter][self.COL_ACTIVE] = value
         if value:
@@ -637,14 +645,16 @@ class ChooseFoldersDialog(Gtk.Dialog):
     def _untick_descendants(self, treeiter):
         child = self.store.iter_children(treeiter)
         while child is not None:
-            self.store[child][self.COL_ACTIVE] = False
+            if not self.store[child][self.COL_EXISTING]:
+                self.store[child][self.COL_ACTIVE] = False
             self._untick_descendants(child)
             child = self.store.iter_next(child)
 
     def _untick_ancestors(self, treeiter):
         parent = self.store.iter_parent(treeiter)
         while parent is not None:
-            self.store[parent][self.COL_ACTIVE] = False
+            if not self.store[parent][self.COL_EXISTING]:
+                self.store[parent][self.COL_ACTIVE] = False
             parent = self.store.iter_parent(parent)
 
     def _checked(self):
@@ -652,7 +662,10 @@ class ChooseFoldersDialog(Gtk.Dialog):
 
         def walk(treeiter):
             while treeiter is not None:
-                if self.store[treeiter][self.COL_ACTIVE]:
+                if (
+                    self.store[treeiter][self.COL_ACTIVE]
+                    and not self.store[treeiter][self.COL_EXISTING]
+                ):
                     found.append(self.store[treeiter][self.COL_PATH])
                 walk(self.store.iter_children(treeiter))
                 treeiter = self.store.iter_next(treeiter)
@@ -1078,6 +1091,8 @@ class SettingsWindow(Gtk.Window):
         self.config = app.config
         self.engine = app.engine
         self._loading = False
+        #: guards against rebuilding the job list from inside itself
+        self._refreshing = False
         self._current_job_id = None
         self._log_timer = None
 
@@ -1375,7 +1390,12 @@ class SettingsWindow(Gtk.Window):
         if not remote:
             _message(self, Gtk.MessageType.INFO, "Select an account first")
             return
-        dialog = ChooseFoldersDialog(self, remote)
+        existing = {
+            (j.get("remote_path") or "").strip("/")
+            for j in self.config.jobs
+            if j.get("remote") == remote
+        }
+        dialog = ChooseFoldersDialog(self, remote, existing=existing)
         response = dialog.run()
         base, folders, root_files, whole = dialog.selection()
         dialog.destroy()
@@ -1384,17 +1404,24 @@ class SettingsWindow(Gtk.Window):
         if self._current_job_id:
             self._save_current_job(reload_engine=False)
         created = []
+        taken = {cfgmod.job_identity(j) for j in self.config.jobs}
+
+        def add(job):
+            """Never create a second pair over the same folders."""
+            if cfgmod.job_identity(job) in taken:
+                return
+            taken.add(cfgmod.job_identity(job))
+            created.append(self.config.add_job(job))
+
         if whole:
-            created.append(
-                self.config.add_job(
-                    cfgmod.new_job(
-                        name=remote,
-                        remote=remote,
-                        remote_path="",
-                        local_path=base,
-                        allow_whole_drive=True,
-                        enabled=False,
-                    )
+            add(
+                cfgmod.new_job(
+                    name=remote,
+                    remote=remote,
+                    remote_path="",
+                    local_path=base,
+                    allow_whole_drive=True,
+                    enabled=False,
                 )
             )
         if root_files and not whole:
@@ -1409,20 +1436,24 @@ class SettingsWindow(Gtk.Window):
                 enabled=False,
             )
             job["excludes"] = ["*/**"] + list(job["excludes"])
-            created.append(self.config.add_job(job))
+            add(job)
         for folder in folders:
-            created.append(
-                self.config.add_job(
-                    cfgmod.new_job(
-                        name=folder.replace("/", " / "),
-                        remote=remote,
-                        remote_path=folder,
-                        local_path=os.path.join(base, *folder.split("/")),
-                        enabled=False,
-                    )
+            add(
+                cfgmod.new_job(
+                    name=folder.replace("/", " / "),
+                    remote=remote,
+                    remote_path=folder,
+                    local_path=os.path.join(base, *folder.split("/")),
+                    enabled=False,
                 )
             )
         if not created:
+            _message(
+                self,
+                Gtk.MessageType.INFO,
+                "Nothing to add",
+                "Those folders already have a pair in Synced folders.",
+            )
             return
         self.config.save()
         self.engine.reload()
@@ -1792,6 +1823,22 @@ class SettingsWindow(Gtk.Window):
         self.f_interval.set_sensitive(not is_mount)
 
     def refresh_jobs(self):
+        """Rebuild the pair list.
+
+        Repopulating the list moves the selection, which the selection handler
+        would otherwise read as "the user picked another pair", save, and rebuild
+        the list again — a loop that starves the main loop and freezes the
+        window. The guard makes those selection changes non-events.
+        """
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self._refresh_jobs_inner()
+        finally:
+            self._refreshing = False
+
+    def _refresh_jobs_inner(self):
         selected = self._current_job_id
         self.job_store.clear()
         for job in self.config.jobs:
@@ -1831,6 +1878,11 @@ class SettingsWindow(Gtk.Window):
             return
         job_id = model[treeiter][0]
         if job_id == self._current_job_id:
+            return
+        if self._refreshing:
+            # the list is being rebuilt: adopt the selection, do not save or reload
+            self._current_job_id = job_id
+            self._load_job(job_id)
             return
         if self._current_job_id:
             self._save_current_job(reload_engine=True)
@@ -2369,9 +2421,10 @@ class SettingsWindow(Gtk.Window):
     # ------------------------------------------------------------ misc
 
     def on_engine_change(self):
-        if self.get_visible():
-            self.refresh_jobs()
-            self.update_job_status()
+        if self._refreshing or not self.get_visible():
+            return
+        self.refresh_jobs()
+        self.update_job_status()
 
     def _on_close(self, *_args):
         self._save_current_job()

@@ -98,6 +98,34 @@ def new_job(**overrides):
     return job
 
 
+def job_identity(job):
+    """What makes two pairs the same piece of work."""
+    return (
+        job.get("remote") or "",
+        (job.get("remote_path") or "").strip("/"),
+        os.path.abspath(os.path.expanduser(job.get("local_path") or "")),
+    )
+
+
+def _dedupe_jobs(jobs):
+    """Drop pairs that duplicate another one.
+
+    Two pairs over the same folders run two rclone processes against the same
+    paths: they fight over the same lock and each one's file watcher retriggers
+    the other. An enabled duplicate wins over a disabled one.
+    """
+    best = {}
+    order = []
+    for job in jobs:
+        key = job_identity(job)
+        if key not in best:
+            best[key] = job
+            order.append(key)
+        elif job.get("enabled") and not best[key].get("enabled"):
+            best[key] = job
+    return [best[key] for key in order]
+
+
 def _atomic_write(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
@@ -143,7 +171,7 @@ class Config:
             if not job.get("excludes"):
                 job["excludes"] = list(DEFAULT_EXCLUDES)
             jobs.append(job)
-        merged["jobs"] = jobs
+        merged["jobs"] = _dedupe_jobs(jobs)
         merged["version"] = CONFIG_VERSION
         self.data = merged
 

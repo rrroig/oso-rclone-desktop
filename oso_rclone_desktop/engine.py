@@ -208,30 +208,44 @@ class JobRunner:
         self._schedule_next()
         self._schedule_quota()
 
-    def stop(self, wait=True):
+    def stop(self, wait=False):
+        """Ask the running command to stop. Never blocks the interface.
+
+        Waiting here froze the whole window for up to ten seconds per pair,
+        because editing a folder reloads every runner and rclone takes its time
+        to unwind. The process is signalled and reaped in the background.
+        """
         self._cancelled = True
         self._cancel_timers()
         if self._watcher:
             self._watcher.stop()
             self._watcher = None
         proc = self._proc
-        if proc and proc.poll() is None:
-            try:
-                if self.mode == "mount":
-                    self._unmount()
-                else:
-                    proc.send_signal(signal.SIGTERM)
-            except OSError:
-                pass
-            if wait:
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
         self._proc = None
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            if self.mode == "mount":
+                self._unmount()
+            else:
+                proc.send_signal(signal.SIGTERM)
+        except OSError:
+            return
+        if wait:
+            self._reap(proc)
+        else:
+            threading.Thread(target=self._reap, args=(proc,), daemon=True).start()
+
+    @staticmethod
+    def _reap(proc):
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     def reload(self, job):
         """Apply an edited configuration to a live runner."""
