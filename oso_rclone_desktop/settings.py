@@ -198,35 +198,57 @@ class DryRunDialog(Gtk.Dialog):
 
 
 class BlockedDeletionsDialog(Gtk.Dialog):
-    """The way out when the delete guard stopped a deletion you actually meant."""
+    """What to do about a deletion the safety net stopped.
+
+    Two cases land here: a run that would delete more than the allowed share of
+    the files, and — separately — folders that disappeared locally, which always
+    ask, because "I deleted a folder" and "I no longer want that folder synced"
+    look identical on disk and mean very different things.
+    """
+
+    RESPONSE_DELETE = 1
+    RESPONSE_UNSYNC = 2
+    RESPONSE_RESTORE = 3
+    RESPONSE_OPEN = 4
 
     def __init__(self, parent, runner):
         super().__init__(
-            title="Deletion blocked — %s" % runner.name, transient_for=parent, modal=True
+            title="Deletion needs your approval — %s" % runner.name,
+            transient_for=parent,
+            modal=True,
         )
         self.runner = runner
-        self.set_default_size(640, 460)
-        self.add_buttons("Open folder", 3, "Keep everything", Gtk.ResponseType.CANCEL)
-        self.approve_btn = self.add_button("Delete these files", 1)
-        self.approve_btn.get_style_context().add_class("destructive-action")
-        self.approve_btn.set_sensitive(False)
+        self.folders = list(runner.pending_dir_deletions)
+        self.set_default_size(660, 480)
 
         box = self.get_content_area()
         box.set_border_width(12)
         box.set_spacing(8)
-        box.add(
-            _label(
-                "A sync wanted to delete more than the allowed share of the files, so it "
-                "was cancelled and nothing has been deleted.\n\n"
-                "If you deleted these on purpose, approve it and the deletion is applied "
-                "to the other side too — copies still go to the trash folder first, and "
-                "on Google Drive they also land in Drive's own bin.\n\n"
-                "If this was an accident (wrong folder, disk not mounted), close this "
-                "window: the files are untouched on the other side and the next sync "
-                "will bring them back.",
-                wrap=True,
+
+        if self.folders:
+            intro = (
+                "These folders were deleted from the local copy. Nothing has been removed "
+                "from the remote yet.\n\n"
+                "• <b>Delete them everywhere</b> — the deletion is applied to the remote too. "
+                "Copies go to the trash folder first, and on Google Drive to Drive's own bin, "
+                "so it stays reversible.\n"
+                "• <b>Keep them, stop syncing</b> — the folders stay untouched on the remote "
+                "and are simply excluded from this pair from now on.\n"
+                "• <b>Restore them here</b> — you deleted them by mistake; download them back."
             )
-        )
+        else:
+            intro = (
+                "A sync wanted to delete more than the allowed share of the files, so it was "
+                "cancelled and <b>nothing has been deleted</b>.\n\n"
+                "If you meant it, approve it and the deletion is applied to the other side, "
+                "with copies kept in the trash folder. If this was an accident — wrong folder, "
+                "disk not mounted — close this window and the next sync restores the files."
+            )
+        label = Gtk.Label(xalign=0.0)
+        label.set_markup(intro)
+        label.set_line_wrap(True)
+        label.set_max_width_chars(72)
+        box.add(label)
 
         self.store = Gtk.ListStore(str)
         view = Gtk.TreeView(model=self.store, headers_visible=False)
@@ -236,36 +258,72 @@ class BlockedDeletionsDialog(Gtk.Dialog):
         scroller.add(view)
         box.pack_start(scroller, True, True, 0)
 
-        self.count_label = _label("Checking what would be deleted…", dim=True)
+        self.count_label = _label("", dim=True)
         box.pack_start(self.count_label, False, False, 0)
+
+        self.add_button("Open folder", self.RESPONSE_OPEN)
+        self.add_button("Decide later", Gtk.ResponseType.CANCEL)
+        if self.folders:
+            self.add_button("Restore them here", self.RESPONSE_RESTORE)
+            self.add_button("Keep them, stop syncing", self.RESPONSE_UNSYNC)
+        self.delete_btn = self.add_button(
+            "Delete them everywhere" if self.folders else "Delete these files",
+            self.RESPONSE_DELETE,
+        )
+        self.delete_btn.get_style_context().add_class("destructive-action")
 
         self.connect("response", self._on_response)
         self.show_all()
-        self._fill(runner.blocked_deletions)
-        runner.collect_blocked_deletions(callback=self._fill)
+
+        if self.folders:
+            self._fill(self.folders)
+        else:
+            self.count_label.set_text("Checking what would be deleted…")
+            self.delete_btn.set_sensitive(False)
+            self._fill(runner.blocked_deletions)
+            runner.collect_blocked_deletions(callback=self._fill)
 
     def _fill(self, names):
         self.store.clear()
         for name in names or []:
             self.store.append([name])
         if names:
-            self.count_label.set_text("%d item(s) would be deleted." % len(names))
-            self.approve_btn.set_sensitive(True)
+            self.count_label.set_text(
+                "%d folder(s)." % len(names)
+                if self.folders
+                else "%d item(s) would be deleted." % len(names)
+            )
+            self.delete_btn.set_sensitive(True)
         return False
 
     def _on_response(self, _dialog, response):
-        if response == 3:
+        if response == self.RESPONSE_OPEN:
             util.open_path(self.runner.local_path)
             return
-        if response == 1:
+        if response == self.RESPONSE_DELETE:
             if not _confirm(
                 self,
                 "Delete %d item(s) on the other side?" % len(self.store),
-                "This applies the deletion you already made locally. Copies are kept in "
-                "the trash folder for the retention period, so it can still be undone.",
+                "This applies a deletion you already made locally. Copies are kept in the "
+                "trash folder for the retention period, so it can still be undone.",
             ):
                 return
             self.runner.approve_deletion()
+        elif response == self.RESPONSE_UNSYNC:
+            self.runner.stop_syncing_paths(self.folders)
+            _message(
+                self,
+                Gtk.MessageType.INFO,
+                "Kept on the remote, no longer synced",
+                "Exclude rules were added for %d folder(s). They stay exactly as they are "
+                "on the remote. Remove the rules under Advanced → Exclude patterns if you "
+                "change your mind." % len(self.folders),
+            )
+        elif response == self.RESPONSE_RESTORE:
+            self.count_label.set_text("Downloading…")
+            self.set_sensitive(False)
+            self.runner.restore_paths(self.folders, callback=lambda ok: self.destroy())
+            return
         self.destroy()
 
 
@@ -890,6 +948,17 @@ class SettingsWindow(Gtk.Window):
         adv.attach(self.f_safety_backup, 1, arow, 1, 1)
         arow += 1
 
+        self.f_confirm_dirs = Gtk.CheckButton(
+            label="Always ask before a deleted folder is removed on the other side"
+        )
+        self.f_confirm_dirs.set_tooltip_text(
+            "Deleting single files syncs straight through. Deleting a whole folder asks "
+            "first, so you can choose between deleting it everywhere, keeping it on the "
+            "remote and unsyncing it, or restoring it."
+        )
+        adv.attach(self.f_confirm_dirs, 1, arow, 1, 1)
+        arow += 1
+
         self.f_max_delete = Gtk.SpinButton.new_with_range(1, 100, 5)
         self._row(
             adv,
@@ -946,7 +1015,7 @@ class SettingsWindow(Gtk.Window):
             ("Open local folder", self._on_open_local, None),
             ("View log", self._on_view_log, None),
             ("Conflicts…", self._on_conflicts, None),
-            ("Approve deletion…", self._on_blocked, None),
+            ("Review deletion…", self._on_blocked, None),
         ):
             btn = Gtk.Button(label=label)
             if style:
@@ -956,7 +1025,7 @@ class SettingsWindow(Gtk.Window):
             if label == "Conflicts…":
                 self.conflicts_btn = btn
                 btn.set_sensitive(False)
-            if label == "Approve deletion…":
+            if label == "Review deletion…":
                 self.blocked_btn = btn
                 btn.set_sensitive(False)
         box.pack_start(actions, False, False, 0)
@@ -1053,6 +1122,7 @@ class SettingsWindow(Gtk.Window):
         self.f_skip_gdocs.set_active(job.get("skip_gdocs", True))
         self.f_safety_backup.set_active(job.get("safety_backup", True))
         self.f_max_delete.set_value(job.get("max_delete_percent", 25))
+        self.f_confirm_dirs.set_active(job.get("confirm_folder_deletions", True))
         self.f_trash_days.set_value(job.get("trash_days", 30))
         self.f_mount_opts.set_text(job.get("mount_options", ""))
         self.f_extra.set_text(job.get("extra_args", ""))
@@ -1082,6 +1152,7 @@ class SettingsWindow(Gtk.Window):
                 "skip_gdocs": self.f_skip_gdocs.get_active(),
                 "safety_backup": self.f_safety_backup.get_active(),
                 "max_delete_percent": int(self.f_max_delete.get_value()),
+                "confirm_folder_deletions": self.f_confirm_dirs.get_active(),
                 "trash_days": int(self.f_trash_days.get_value()),
                 "mount_options": self.f_mount_opts.get_text().strip(),
                 "extra_args": self.f_extra.get_text().strip(),

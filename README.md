@@ -121,19 +121,28 @@ visible under **Synced folders → Advanced → Safety net**:
 Beyond that: mirror modes carry a red warning in the UI and ask for confirmation before
 their first run, and if rclone loses its baseline it stops and asks rather than guessing.
 
-### Deleting a folder on purpose
+### Deleting a folder always asks
 
-The delete guard does not stop you deleting things — it just refuses to do it silently.
-Delete a folder of 500 photos and the next sync stops with **"Deletion blocked"** in the
-tray. Open it and you get the full list of what would be removed, then either:
+Deleting single files syncs straight through — that is the point of a sync tool. Deleting
+a whole **folder** is different: on disk it is indistinguishable from "I no longer want
+this folder synced", and the two mean opposite things. So a folder that disappears
+locally always stops the sync and asks, however small it is:
 
-- **Delete these files** — the deletion is applied to the other side. Copies still go to
-  the trash folder (and Drive's own bin), so it remains reversible.
-- **Keep everything** — nothing happens; the next sync brings the files back from Drive.
+- **Delete them everywhere** — apply the deletion to the remote, via the trash folder.
+- **Keep them, stop syncing** — the folder stays untouched on the remote and is added to
+  this pair's exclude rules. Nothing is deleted anywhere.
+- **Restore them here** — you deleted it by mistake; download it back from the remote.
 
-So a deliberate mass deletion costs you one confirmation, and an accidental one costs you
-nothing at all. Raise *Abort if deleting > %* if you find the prompt too eager, or set it
-to 100 to disable the guard entirely (the trash still protects you).
+Turn this off per folder with *Always ask before a deleted folder is removed* under
+Advanced → Safety net.
+
+### When the delete guard trips
+
+Independently of folders, any run that would delete more than the allowed share of the
+files stops and shows the exact list, so you can approve it or walk away. A deliberate
+mass deletion costs you one confirmation; an accidental one costs you nothing. Raise
+*Abort if deleting > %* if the prompt feels too eager, or set it to 100 to rely on the
+trash alone.
 
 ### Sync a subfolder, not your whole Drive
 

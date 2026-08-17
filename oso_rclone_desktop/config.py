@@ -71,6 +71,7 @@ JOB_DEFAULTS = {
     # --- safety net ---
     "safety_backup": True,      # move deleted/replaced files to a trash folder
     "max_delete_percent": 25,   # abort the run if more than this share would be deleted
+    "confirm_folder_deletions": True,  # a missing folder always asks before propagating
     "trash_days": 30,           # how long trashed copies are kept
     "excludes": None,  # None -> DEFAULT_EXCLUDES
     "extra_args": "",

@@ -158,7 +158,7 @@ class Application:
             entries.insert(
                 0,
                 (
-                    "⚠ Deletion blocked — review…",
+                    "⚠ Deletion needs review…",
                     lambda *_a: self._job_action(job["id"], "blocked"),
                 ),
             )

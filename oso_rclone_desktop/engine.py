@@ -12,7 +12,7 @@ import time
 from gi.repository import Gio, GLib
 
 from . import rclone, util
-from .watcher import RecursiveWatcher
+from .watcher import SKIP_DIRS as _SKIP_DIRS, RecursiveWatcher
 
 # Runner states
 DISABLED = "disabled"
@@ -119,6 +119,8 @@ class JobRunner:
         #: set when a run was stopped by the delete guard; holds what it wanted to remove
         self.blocked_deletions = []
         self.safety_blocked = False
+        #: folders that vanished locally and need a decision before syncing
+        self.pending_dir_deletions = []
 
         self._proc = None
         self._thread = None
@@ -354,11 +356,62 @@ class JobRunner:
             self.safety_blocked = True
             self.blocked_deletions = ["(everything under %s)" % self.local_path]
             return False
+        if (
+            self.job.get("confirm_folder_deletions", True)
+            and self.mode in ("bisync", "sync_up")
+            and reason not in ("force", "resync")
+        ):
+            missing = self._missing_dirs()
+            if missing:
+                self.pending_dir_deletions = missing
+                self.blocked_deletions = list(missing)
+                self.safety_blocked = True
+                self._fail(
+                    "%d folder(s) were deleted locally. Nothing has been removed from the "
+                    "remote yet — choose what should happen to them."
+                    % len(missing)
+                )
+                return False
         if self.mode == "bisync" and not self.resync_done and reason != "resync":
             if not rclone.bisync_workdir_has_listings(local, self.remote_spec):
                 self._set_state(NEEDS_RESYNC)
                 return False
         return True
+
+    MAX_TRACKED_DIRS = 5000
+
+    def _scan_local_dirs(self):
+        """Relative paths of every folder under the local root."""
+        root = self.local_path
+        found = set()
+        if not os.path.isdir(root):
+            return found
+        for dirpath, dirnames, _files in os.walk(root):
+            dirnames[:] = [
+                d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+            ]
+            for name in dirnames:
+                rel = os.path.relpath(os.path.join(dirpath, name), root)
+                found.add(rel)
+                if len(found) >= self.MAX_TRACKED_DIRS:
+                    return found
+        return found
+
+    @staticmethod
+    def _topmost(paths):
+        """Drop children whose parent is also missing, so we report 'Photos', not
+        'Photos', 'Photos/2019', 'Photos/2019/June'."""
+        result = []
+        for path in sorted(paths):
+            if not any(path.startswith(kept + "/") for kept in result):
+                result.append(path)
+        return result
+
+    def _missing_dirs(self):
+        stored = set(self.engine.state.job(self.id).get("local_dirs") or [])
+        if not stored:
+            return []
+        return self._topmost(stored - self._scan_local_dirs())
 
     def _count_local_entries(self):
         try:
@@ -450,7 +503,10 @@ class JobRunner:
             self.last_error = ""
             self.safety_blocked = False
             self.blocked_deletions = []
-            self.engine.state.job(self.id)["local_entries"] = self._count_local_entries()
+            saved = self.engine.state.job(self.id)
+            saved["local_entries"] = self._count_local_entries()
+            saved["local_dirs"] = sorted(self._scan_local_dirs())
+            self.pending_dir_deletions = []
             self.last_result = self._summarise(tail)
             if resync or self.mode == "bisync":
                 self.resync_done = True
@@ -621,8 +677,71 @@ class JobRunner:
     def approve_deletion(self):
         """One-shot override: run the blocked sync, deletions included."""
         self.safety_blocked = False
+        self.pending_dir_deletions = []
         self.last_error = ""
         self.request_sync("force", force=True)
+
+    def stop_syncing_paths(self, paths):
+        """Keep the folders on the remote, but leave them out of this pair.
+
+        Adds an exclude rule per folder. rclone bisync treats a filter change as a
+        reason to rebuild its baseline, so this runs a resync afterwards — which is
+        merge-only and deletes nothing.
+        """
+        excludes = list(self.job.get("excludes") or [])
+        for path in paths:
+            path = path.strip("/")
+            for rule in ("%s/**" % path, path):
+                if rule not in excludes:
+                    excludes.append(rule)
+        self.job["excludes"] = excludes
+        self.engine.config.save()
+        self.safety_blocked = False
+        self.pending_dir_deletions = []
+        self.blocked_deletions = []
+        self.last_error = ""
+        self.resync_done = False
+        self.request_sync("resync", resync=True, force=True)
+
+    def restore_paths(self, paths, callback=None):
+        """Bring folders back from the remote after an accidental deletion."""
+        local = self.local_path
+        remote = self.remote_spec
+
+        def worker():
+            errors = []
+            for path in paths:
+                path = path.strip("/")
+                argv = [
+                    rclone.binary(),
+                    "copy",
+                    "%s/%s" % (remote.rstrip("/"), path),
+                    os.path.join(local, path),
+                    "--create-empty-src-dirs",
+                ]
+                try:
+                    proc = subprocess.run(argv, capture_output=True, text=True, timeout=3600)
+                    if proc.returncode != 0:
+                        errors.append(proc.stderr.strip().splitlines()[-1:])
+                except (OSError, subprocess.SubprocessError) as exc:
+                    errors.append([str(exc)])
+            GLib.idle_add(self._restored, errors, callback)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _restored(self, errors, callback=None):
+        if errors:
+            self._fail("Restore failed: %s" % util.truncate(" ".join(sum(errors, [])), 120))
+        else:
+            self.safety_blocked = False
+            self.pending_dir_deletions = []
+            self.blocked_deletions = []
+            self.last_error = ""
+            self._set_state(IDLE)
+            self.request_sync("manual")
+        if callback:
+            callback(not errors)
+        return GLib.SOURCE_REMOVE
 
     # -------------------------------------------------- safety net
 
