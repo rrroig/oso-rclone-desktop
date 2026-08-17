@@ -20,6 +20,8 @@ runs on MATE, Xfce, Budgie and KDE.
   status, "Sync now", quota, and quick links to the folder and the log.
 - **Settings window** with four tabs: Accounts, Synced folders, Logs, General.
 - **Multiple folders and multiple accounts** — one entry per pair.
+- **Safety net**: aborts a run that would delete too much, keeps deleted files in a
+  dated trash on both sides, and offers a dry-run preview before touching anything.
 - **Survives reality**: offline detection, metered-connection handling, retries,
   first-run baseline handling, log rotation, single instance.
 
@@ -92,6 +94,33 @@ installing it. On **Cinnamon** nothing extra is needed.
 | Mirror Drive → local | Local becomes an exact copy of Drive, deletions included. |
 | Mount | Drive appears as a folder without a local copy (`rclone mount`, needs fuse3). |
 
+## Safety: it will not wipe your Drive
+
+Two-way sync propagates deletions by design, so the app ships with three guards, all
+visible under **Synced folders → Advanced → Safety net**:
+
+- **Delete guard.** If a single run would delete more than a share of the files
+  (**25 % by default**), rclone aborts the whole run and deletes *nothing*. The tray
+  reports "Stopped on purpose", so a wiped local folder, an unmounted disk or a wrong
+  path cannot cascade to Drive.
+- **Trash instead of destruction.** Deleted and overwritten files are *moved* to a dated
+  trash folder rather than removed: `.oso-trash/<folder>/<date>/` inside your Drive, and
+  `~/.local/share/oso-rclone-desktop/trash/` locally. Kept for 30 days by default.
+  (The remote trash needs the synced folder to be a subfolder of the Drive, not its root.)
+- **Preview (dry run).** A button that runs the real command with `--dry-run` and shows
+  exactly what would be copied, moved and deleted, changing nothing. Worth using before
+  the first sync of any pair.
+
+Beyond that: mirror modes carry a red warning in the UI and ask for confirmation before
+their first run, and if rclone loses its baseline it stops and asks rather than guessing.
+
+### Sync a subfolder, not your whole Drive
+
+You rarely want the entire Drive. In **Synced folders**, set *Folder in Drive* to a
+subfolder — use the **Browse…** button to pick or create one, for example `Work`. Only
+that subtree is synced; everything else in your Drive is never read, moved or deleted.
+This is also what makes the remote trash possible.
+
 ## Conflicts
 
 A conflict is when the *same file* changed on *both* sides between two syncs.
@@ -135,6 +164,8 @@ guess and reports **"First sync required"** rather than deleting anything; run
 | Settings | `~/.config/oso-rclone-desktop/config.json` |
 | Sync state | `~/.local/state/oso-rclone-desktop/state.json` |
 | Logs | `~/.local/state/oso-rclone-desktop/logs/` (rotated at 5 MB) |
+| Local trash | `~/.local/share/oso-rclone-desktop/trash/` |
+| Drive trash | `.oso-trash/` in the account, next to the synced folder |
 | Account tokens | `~/.config/rclone/rclone.conf` (managed by rclone) |
 
 ## Command line

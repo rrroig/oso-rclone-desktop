@@ -3,6 +3,7 @@
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -41,6 +42,21 @@ _PROGRESS_RE = re.compile(r"Transferred:.*?(\d+)%")
 #: rclone renames the losing side of a conflict to "<name>.conflictN"
 _CONFLICT_RE = re.compile(r"([^\s\x1b]+\.conflict\d+)")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+#: rclone/bisync wording when a run is aborted by the delete guard
+_SAFETY_ABORT_PATTERNS = (
+    "safety abort",
+    "too many deletes",
+    "max delete",
+    "deletes limit",
+    "max-delete",
+)
+
+
+def _is_safety_abort(text):
+    low = (text or "").lower()
+    return any(p in low for p in _SAFETY_ABORT_PATTERNS)
 
 
 def _rotate_log(path):
@@ -373,12 +389,19 @@ class JobRunner:
             self.last_result = self._summarise(tail)
             if resync or self.mode == "bisync":
                 self.resync_done = True
+            self.prune_trash()
             self._persist()
             self._set_state(IDLE)
             if self.engine.config.get("notify_on_success"):
                 self.engine.notify(
                     self.name, "Sync finished in %ds" % int(elapsed), "low"
                 )
+        elif _is_safety_abort(text):
+            self._fail(
+                "Stopped on purpose: this run wanted to delete more than %d%% of the "
+                "files. Nothing was deleted. Check both folders before syncing again."
+                % int(self.job.get("max_delete_percent") or 25)
+            )
         elif rclone.output_needs_resync(text):
             self.resync_done = False
             self._persist()
@@ -505,14 +528,71 @@ class JobRunner:
             except (OSError, subprocess.SubprocessError):
                 continue
 
+    # -------------------------------------------------- safety net
+
+    def trash_dirs(self):
+        """(local_trash, remote_trash) for --backup-dir, or None when impossible.
+
+        Both must sit OUTSIDE the synced paths or rclone refuses to run, so the
+        local trash lives under ~/.local/share and the remote one next to the
+        synced folder. Syncing the very root of a Drive leaves no room for the
+        remote trash, which is one more reason to sync a subfolder.
+        """
+        if not self.job.get("safety_backup", True):
+            return None, None
+        stamp = time.strftime("%Y-%m-%d")
+        local_trash = os.path.join(util.TRASH_DIR, self.id, stamp)
+        remote = self.job.get("remote") or ""
+        remote_path = (self.job.get("remote_path") or "").strip("/")
+        if not remote or not remote_path:
+            return local_trash, None
+        remote_trash = "%s:%s/%s/%s" % (remote, util.REMOTE_TRASH, remote_path, stamp)
+        return local_trash, remote_trash
+
+    def prune_trash(self):
+        """Delete trashed copies older than the configured retention."""
+        days = int(self.job.get("trash_days") or 30)
+        if days <= 0:
+            return
+        cutoff = time.time() - days * 86400
+        root = os.path.join(util.TRASH_DIR, self.id)
+        if os.path.isdir(root):
+            for name in os.listdir(root):
+                path = os.path.join(root, name)
+                try:
+                    if os.path.getmtime(path) < cutoff:
+                        shutil.rmtree(path, ignore_errors=True)
+                except OSError:
+                    continue
+        _local, remote_trash = self.trash_dirs()
+        if not remote_trash:
+            return
+        base = remote_trash.rsplit("/", 1)[0]
+
+        def worker():
+            for args in (
+                ["delete", base, "--min-age", "%dd" % days],
+                ["rmdirs", base, "--leave-root"],
+            ):
+                try:
+                    subprocess.run(
+                        [rclone.binary()] + args, capture_output=True, timeout=300
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    return
+
+        threading.Thread(target=worker, daemon=True).start()
+
     # -------------------------------------------------- command building
 
-    def build_command(self, resync=False):
+    def build_command(self, resync=False, dry_run=False):
         job = self.job
         local = self.local_path
         remote = self.remote_spec
         modern = self.engine.modern_bisync
         argv = [rclone.binary()]
+
+        local_trash, remote_trash = self.trash_dirs()
 
         mode = self.mode
         if mode == "mount":
@@ -531,6 +611,13 @@ class JobRunner:
                     "--conflict-loser",
                     "num",
                 ]
+            # bisync reads --max-delete as a PERCENTAGE and aborts the whole run
+            # rather than deleting more than that share of the files.
+            argv += ["--max-delete", str(int(job.get("max_delete_percent") or 25))]
+            if local_trash:
+                argv += ["--backup-dir1", local_trash]
+            if remote_trash:
+                argv += ["--backup-dir2", remote_trash]
             if resync:
                 argv.append("--resync")
                 if modern:
@@ -538,9 +625,14 @@ class JobRunner:
         elif mode in ("copy_up", "sync_up"):
             verb = "copy" if mode == "copy_up" else "sync"
             argv += [verb, local, remote, "--create-empty-src-dirs", "--track-renames"]
+            if remote_trash:
+                # deleted/overwritten files on Drive are moved aside, not destroyed
+                argv += ["--backup-dir", remote_trash]
         elif mode in ("copy_down", "sync_down"):
             verb = "copy" if mode == "copy_down" else "sync"
             argv += [verb, remote, local, "--create-empty-src-dirs"]
+            if local_trash:
+                argv += ["--backup-dir", local_trash]
         else:
             argv += ["bisync", local, remote]
 
@@ -568,7 +660,9 @@ class JobRunner:
             argv += ["--bwlimit", bwlimit]
         if job.get("skip_gdocs", True) and rclone.remote_type(job.get("remote")) == "drive":
             argv.append("--drive-skip-gdocs")
-        for pattern in job.get("excludes") or []:
+        if dry_run:
+            argv.append("--dry-run")
+        for pattern in [util.REMOTE_TRASH + "/**"] + list(job.get("excludes") or []):
             pattern = pattern.strip()
             if pattern and not pattern.startswith("#"):
                 argv += ["--exclude", pattern]

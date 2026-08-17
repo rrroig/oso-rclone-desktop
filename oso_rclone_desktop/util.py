@@ -20,6 +20,11 @@ def _xdg(env, default):
 CONFIG_DIR = os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), APP_ID)
 STATE_DIR = os.path.join(_xdg("XDG_STATE_HOME", "~/.local/state"), APP_ID)
 CACHE_DIR = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), APP_ID)
+DATA_DIR = os.path.join(_xdg("XDG_DATA_HOME", "~/.local/share"), APP_ID)
+#: deleted/overwritten local files are moved here instead of being destroyed
+TRASH_DIR = os.path.join(DATA_DIR, "trash")
+#: same idea on the remote side, always OUTSIDE the synced folder
+REMOTE_TRASH = ".oso-trash"
 LOG_DIR = os.path.join(STATE_DIR, "logs")
 AUTOSTART_DIR = os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "autostart")
 
@@ -32,7 +37,7 @@ ICON_DIR = os.path.join(PKG_DIR, "icons")
 
 
 def ensure_dirs():
-    for d in (CONFIG_DIR, STATE_DIR, CACHE_DIR, LOG_DIR):
+    for d in (CONFIG_DIR, STATE_DIR, CACHE_DIR, LOG_DIR, DATA_DIR, TRASH_DIR):
         os.makedirs(d, exist_ok=True)
 
 

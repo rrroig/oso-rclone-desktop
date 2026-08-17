@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import threading
 
@@ -11,6 +12,8 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, Pango  # noqa: E402
 
 from . import APP_NAME, __version__, config as cfgmod, engine as eng, rclone, util  # noqa: E402
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 INSTALL_RCLONE_CMD = "curl -fsSL https://rclone.org/install.sh | sudo bash"
 
@@ -119,6 +122,79 @@ def ask_config_password(parent=None):
             dialog.destroy()
             return password
         error.set_markup("<span foreground='red'>Wrong password — try again.</span>")
+
+
+class DryRunDialog(Gtk.Dialog):
+    """Show exactly what a sync would do, without touching a single file."""
+
+    def __init__(self, parent, runner):
+        super().__init__(
+            title="Preview — %s" % runner.name, transient_for=parent, modal=True
+        )
+        self.runner = runner
+        self.set_default_size(760, 520)
+        self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+
+        box = self.get_content_area()
+        box.set_border_width(12)
+        box.set_spacing(8)
+        box.add(
+            _label(
+                "This is a dry run: rclone reports what it would copy, move or delete and "
+                "changes nothing. Read it before the first real sync.",
+                wrap=True,
+            )
+        )
+        self.summary = _label("Running…", bold=False, dim=True, wrap=True)
+        box.add(self.summary)
+
+        self.view = Gtk.TextView(editable=False, monospace=True)
+        self.view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(self.view)
+        box.pack_start(scroller, True, True, 0)
+
+        self.connect("response", lambda *_a: self.destroy())
+        self.show_all()
+        self._run()
+
+    def _run(self):
+        argv = self.runner.build_command(
+            resync=not self.runner.resync_done and self.runner.mode == "bisync",
+            dry_run=True,
+        )
+        self.view.get_buffer().set_text("$ %s\n\n" % " ".join(argv))
+
+        def worker():
+            try:
+                proc = subprocess.run(
+                    argv, capture_output=True, text=True, timeout=600
+                )
+                output = (proc.stdout or "") + (proc.stderr or "")
+                rc = proc.returncode
+            except Exception as exc:  # noqa: BLE001 - reported in the dialog
+                output, rc = str(exc), 1
+            GLib.idle_add(self._done, output, rc)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _done(self, output, rc):
+        clean = _ANSI.sub("", output)
+        buf = self.view.get_buffer()
+        buf.insert(buf.get_end_iter(), clean)
+        deletes = len(re.findall(r"(?m)^.*\bDeleted\b.*$", clean)) + len(
+            re.findall(r"(?m)^.*Skipped delete.*$", clean)
+        )
+        copies = len(re.findall(r"(?m)^.*Skipped copy.*$", clean)) + len(
+            re.findall(r"(?m)^.*\bCopied\b.*$", clean)
+        )
+        verdict = "finished" if rc == 0 else "reported an error (exit %d)" % rc
+        self.summary.set_markup(
+            "<b>Dry run %s — about %d file(s) would be transferred and %d deleted. "
+            "Nothing was changed.</b>" % (verdict, copies, deletes)
+        )
+        return GLib.SOURCE_REMOVE
 
 
 class ConflictsDialog(Gtk.Dialog):
@@ -689,6 +765,10 @@ class SettingsWindow(Gtk.Window):
         self._row(grid, row, "Mode", self.f_mode)
         row += 1
 
+        self.mode_warning = _label("", wrap=True)
+        grid.attach(self.mode_warning, 1, row, 1, 1)
+        row += 1
+
         self.f_interval = Gtk.SpinButton.new_with_range(1, 1440, 1)
         self._row(grid, row, "Check every (min)", self.f_interval)
         row += 1
@@ -725,6 +805,39 @@ class SettingsWindow(Gtk.Window):
         self._row(adv, arow, "Parallel checks", self.f_checkers)
         arow += 1
 
+        adv.attach(_label("Safety net", bold=True), 0, arow, 2, 1)
+        arow += 1
+
+        self.f_safety_backup = Gtk.CheckButton(
+            label="Keep deleted and replaced files in a trash folder"
+        )
+        self.f_safety_backup.set_tooltip_text(
+            "Instead of destroying a file, rclone moves it to a dated trash folder on "
+            "both sides, so anything removed by mistake can be recovered."
+        )
+        adv.attach(self.f_safety_backup, 1, arow, 1, 1)
+        arow += 1
+
+        self.f_max_delete = Gtk.SpinButton.new_with_range(1, 100, 5)
+        self._row(
+            adv,
+            arow,
+            "Abort if deleting > %",
+            self.f_max_delete,
+            "If a sync would delete more than this share of the files, the whole run is "
+            "cancelled and nothing is deleted.",
+        )
+        arow += 1
+
+        self.f_trash_days = Gtk.SpinButton.new_with_range(0, 365, 1)
+        self._row(adv, arow, "Keep trash for (days)", self.f_trash_days, "0 = keep forever")
+        arow += 1
+
+        trash_btn = Gtk.Button(label="Open local trash folder")
+        trash_btn.connect("clicked", lambda *_a: util.open_path(util.TRASH_DIR))
+        adv.attach(trash_btn, 1, arow, 1, 1)
+        arow += 1
+
         self.f_skip_gdocs = Gtk.CheckButton(
             label="Skip Google Docs/Sheets/Slides (they are not real files)"
         )
@@ -755,6 +868,7 @@ class SettingsWindow(Gtk.Window):
         actions = Gtk.Box(spacing=6, margin_top=6)
         for label, handler, style in (
             ("Apply", self._on_apply, "suggested-action"),
+            ("Preview (dry run)", self._on_dry_run, None),
             ("Sync now", self._on_sync_now, None),
             ("Run first sync…", self._on_resync, None),
             ("Open local folder", self._on_open_local, None),
@@ -776,6 +890,15 @@ class SettingsWindow(Gtk.Window):
 
     def _on_mode_changed(self, _combo):
         mode = self.f_mode.get_active_id() or "bisync"
+        warning = cfgmod.MODE_WARNINGS.get(mode, "")
+        if warning:
+            colour = "#c0392b" if mode in cfgmod.DESTRUCTIVE_MODES else "#8a6d1b"
+            self.mode_warning.set_markup(
+                "<span foreground='%s'>⚠ %s</span>"
+                % (colour, GLib.markup_escape_text(warning))
+            )
+        else:
+            self.mode_warning.set_text("")
         is_mount = mode == "mount"
         for widget in self.mount_row_widgets:
             if widget:
@@ -852,6 +975,9 @@ class SettingsWindow(Gtk.Window):
         self.f_transfers.set_value(job.get("transfers", 4))
         self.f_checkers.set_value(job.get("checkers", 8))
         self.f_skip_gdocs.set_active(job.get("skip_gdocs", True))
+        self.f_safety_backup.set_active(job.get("safety_backup", True))
+        self.f_max_delete.set_value(job.get("max_delete_percent", 25))
+        self.f_trash_days.set_value(job.get("trash_days", 30))
         self.f_mount_opts.set_text(job.get("mount_options", ""))
         self.f_extra.set_text(job.get("extra_args", ""))
         self.f_excludes.get_buffer().set_text("\n".join(job.get("excludes") or []))
@@ -878,6 +1004,9 @@ class SettingsWindow(Gtk.Window):
                 "transfers": int(self.f_transfers.get_value()),
                 "checkers": int(self.f_checkers.get_value()),
                 "skip_gdocs": self.f_skip_gdocs.get_active(),
+                "safety_backup": self.f_safety_backup.get_active(),
+                "max_delete_percent": int(self.f_max_delete.get_value()),
+                "trash_days": int(self.f_trash_days.get_value()),
                 "mount_options": self.f_mount_opts.get_text().strip(),
                 "extra_args": self.f_extra.get_text().strip(),
                 "excludes": [ln.strip() for ln in excludes.splitlines() if ln.strip()],
@@ -982,11 +1111,30 @@ class SettingsWindow(Gtk.Window):
             self.f_local.set_text(dialog.get_filename())
         dialog.destroy()
 
+    def _on_dry_run(self, _btn):
+        self._save_current_job()
+        runner = self.engine.runner(self._current_job_id)
+        if not runner:
+            return
+        if runner.mode == "mount":
+            _message(self, Gtk.MessageType.INFO, "Mount mode has nothing to preview")
+            return
+        DryRunDialog(self, runner)
+
     def _on_sync_now(self, _btn):
         self._save_current_job()
         runner = self.engine.runner(self._current_job_id)
-        if runner:
-            runner.request_sync("manual")
+        if not runner:
+            return
+        if runner.mode in cfgmod.DESTRUCTIVE_MODES and not runner.last_sync_ts:
+            if not _confirm(
+                self,
+                "Run “%s” as a mirror for the first time?" % runner.name,
+                "%s\n\nUse “Preview (dry run)” first if you are not sure."
+                % cfgmod.MODE_WARNINGS.get(runner.mode, ""),
+            ):
+                return
+        runner.request_sync("manual")
 
     def _on_resync(self, _btn):
         self._save_current_job()

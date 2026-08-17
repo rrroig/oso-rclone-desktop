@@ -11,6 +11,7 @@ from . import util
 CONFIG_VERSION = 1
 
 DEFAULT_EXCLUDES = [
+    ".oso-trash/**",
     ".~lock.*",
     "~$*",
     "*.tmp",
@@ -30,6 +31,19 @@ MODES = [
     ("sync_down", "Mirror Drive → local (deletes locally)"),
     ("mount", "Mount Drive as a folder (no local copy)"),
 ]
+
+#: modes that can remove files the user did not touch on that side
+DESTRUCTIVE_MODES = {"sync_up", "sync_down"}
+
+MODE_WARNINGS = {
+    "sync_up": "Drive becomes an exact copy of the local folder: anything on Drive that "
+               "is not in the local folder gets deleted.",
+    "sync_down": "The local folder becomes an exact copy of Drive: local files that are "
+                 "not on Drive get deleted.",
+    "bisync": "Deletions travel in both directions: delete a file here and it is deleted "
+              "on Drive too (and the other way round).",
+    "mount": "Files are not copied locally; they live only on Drive.",
+}
 
 CONFLICT_CHOICES = [
     ("newer", "Keep the newer file"),
@@ -54,6 +68,10 @@ JOB_DEFAULTS = {
     "checkers": 8,
     "skip_gdocs": True,
     "conflict_resolve": "newer",
+    # --- safety net ---
+    "safety_backup": True,      # move deleted/replaced files to a trash folder
+    "max_delete_percent": 25,   # abort the run if more than this share would be deleted
+    "trash_days": 30,           # how long trashed copies are kept
     "excludes": None,  # None -> DEFAULT_EXCLUDES
     "extra_args": "",
     "mount_options": "--vfs-cache-mode writes",
