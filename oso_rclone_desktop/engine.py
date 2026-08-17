@@ -42,6 +42,40 @@ _PROGRESS_RE = re.compile(r"Transferred:.*?(\d+)%")
 #: rclone renames the losing side of a conflict to "<name>.conflictN"
 _CONFLICT_RE = re.compile(r"([^\s\x1b]+\.conflict\d+)")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+#: bisync announces "File was deleted - <relative path>" (the readable one),
+#: "Queue delete - <absolute path>", and plain sync says "<file>: Skipped delete…"
+_DELETE_REL_RE = re.compile(r"File was deleted\s*-?\s*(\S.*?)\s*$")
+_DELETE_AFTER_RE = re.compile(r"Queue delete\s*-?\s*(\S.*?)\s*$")
+_DELETE_BEFORE_RE = re.compile(
+    r":\s*(.+?):\s*(?:Skipped delete as --dry-run is set|Deleted|Deleting)"
+)
+
+
+def extract_deletions(text, roots=()):
+    """File names a (dry) run would delete, as paths relative to the synced folder.
+
+    rclone words this three different ways depending on the command; the relative
+    form is preferred, and absolute paths are trimmed back to the synced root so
+    the user sees "Project/report.odt" rather than a 90-character path.
+    """
+    relative, absolute = [], []
+    for line in _ANSI_RE.sub("", text or "").splitlines():
+        match = _DELETE_REL_RE.search(line)
+        if match:
+            target = relative
+        else:
+            match = _DELETE_AFTER_RE.search(line) or _DELETE_BEFORE_RE.search(line)
+            target = absolute
+        if not match:
+            continue
+        name = match.group(1).strip()
+        for root in roots:
+            root = (root or "").rstrip("/")
+            if root and name.startswith(root + "/"):
+                name = name[len(root) + 1 :]
+        if name and name not in target:
+            target.append(name)
+    return relative or absolute
 
 
 #: rclone/bisync wording when a run is aborted by the delete guard
@@ -82,6 +116,9 @@ class JobRunner:
         self.last_result = ""
         self.quota = None
         self.conflicts = []
+        #: set when a run was stopped by the delete guard; holds what it wanted to remove
+        self.blocked_deletions = []
+        self.safety_blocked = False
 
         self._proc = None
         self._thread = None
@@ -130,6 +167,10 @@ class JobRunner:
         return self._proc is not None and self._proc.poll() is None
 
     def status_text(self):
+        if self.safety_blocked:
+            return "Deletion blocked — %d item(s) need your approval" % len(
+                self.blocked_deletions
+            )
         if self.state == SYNCING and self.progress:
             return "Syncing… %s" % self.progress
         if self.state == IDLE and self.last_sync_ts:
@@ -257,7 +298,7 @@ class JobRunner:
 
     # -------------------------------------------------- running
 
-    def request_sync(self, reason="manual", resync=False):
+    def request_sync(self, reason="manual", resync=False, force=False):
         if self.mode == "mount":
             if not self.busy:
                 self._start_mount()
@@ -270,9 +311,9 @@ class JobRunner:
         if self.busy:
             self._pending = True
             return
-        if not self._preflight(reason):
+        if not force and not self._preflight(reason):
             return
-        self._launch(resync=resync, reason=reason)
+        self._launch(resync=resync, reason=reason, force=force)
 
     def _preflight(self, reason):
         if not rclone.is_installed():
@@ -301,19 +342,40 @@ class JobRunner:
             self.detail = "Paused on metered connection"
             self._set_state(PAUSED)
             return False
+        if self.safety_blocked and reason != "force":
+            return False
+        known = int(self.engine.state.job(self.id).get("local_entries", 0))
+        if known > 0 and self._count_local_entries() == 0:
+            self._fail(
+                "The local folder is empty but held %d item(s) at the last sync. "
+                "Refusing to sync — is the disk or network share still mounted? "
+                "If you really emptied it, use “Allow deletion” to continue." % known
+            )
+            self.safety_blocked = True
+            self.blocked_deletions = ["(everything under %s)" % self.local_path]
+            return False
         if self.mode == "bisync" and not self.resync_done and reason != "resync":
             if not rclone.bisync_workdir_has_listings(local, self.remote_spec):
                 self._set_state(NEEDS_RESYNC)
                 return False
         return True
 
-    def _launch(self, resync=False, reason="manual"):
-        argv = self.build_command(resync=resync)
+    def _count_local_entries(self):
+        try:
+            with os.scandir(self.local_path) as it:
+                return sum(1 for e in it if not e.name.startswith("."))
+        except OSError:
+            return 0
+
+    def _launch(self, resync=False, reason="manual", force=False):
+        argv = self.build_command(resync=resync, force=force)
         _rotate_log(self.log_path)
         self._cancelled = False
         self.progress = ""
         self.detail = "resync" if resync else reason
         self._set_state(SYNCING)
+        if force:
+            self.detail = "override"
         thread = threading.Thread(
             target=self._run_process, args=(argv, resync), daemon=True
         )
@@ -386,6 +448,9 @@ class JobRunner:
                 )
             self.last_sync_ts = int(time.time())
             self.last_error = ""
+            self.safety_blocked = False
+            self.blocked_deletions = []
+            self.engine.state.job(self.id)["local_entries"] = self._count_local_entries()
             self.last_result = self._summarise(tail)
             if resync or self.mode == "bisync":
                 self.resync_done = True
@@ -397,11 +462,13 @@ class JobRunner:
                     self.name, "Sync finished in %ds" % int(elapsed), "low"
                 )
         elif _is_safety_abort(text):
+            self.safety_blocked = True
             self._fail(
                 "Stopped on purpose: this run wanted to delete more than %d%% of the "
-                "files. Nothing was deleted. Check both folders before syncing again."
+                "files. Nothing was deleted — approve it or undo the deletion."
                 % int(self.job.get("max_delete_percent") or 25)
             )
+            self.collect_blocked_deletions()
         elif rclone.output_needs_resync(text):
             self.resync_done = False
             self._persist()
@@ -528,6 +595,35 @@ class JobRunner:
             except (OSError, subprocess.SubprocessError):
                 continue
 
+    def collect_blocked_deletions(self, callback=None):
+        """Ask rclone (dry run) exactly which files the blocked run would delete."""
+        argv = self.build_command(dry_run=True, force=True)
+
+        def worker():
+            try:
+                proc = subprocess.run(argv, capture_output=True, text=True, timeout=600)
+                text = (proc.stdout or "") + (proc.stderr or "")
+            except (OSError, subprocess.SubprocessError) as exc:
+                text = str(exc)
+            roots = (self.local_path, self.remote_spec)
+            GLib.idle_add(self._set_blocked, extract_deletions(text, roots), callback)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_blocked(self, names, callback=None):
+        if names:
+            self.blocked_deletions = names
+        self.engine.notify_changed(self)
+        if callback:
+            callback(self.blocked_deletions)
+        return GLib.SOURCE_REMOVE
+
+    def approve_deletion(self):
+        """One-shot override: run the blocked sync, deletions included."""
+        self.safety_blocked = False
+        self.last_error = ""
+        self.request_sync("force", force=True)
+
     # -------------------------------------------------- safety net
 
     def trash_dirs(self):
@@ -585,7 +681,7 @@ class JobRunner:
 
     # -------------------------------------------------- command building
 
-    def build_command(self, resync=False, dry_run=False):
+    def build_command(self, resync=False, dry_run=False, force=False):
         job = self.job
         local = self.local_path
         remote = self.remote_spec
@@ -613,7 +709,11 @@ class JobRunner:
                 ]
             # bisync reads --max-delete as a PERCENTAGE and aborts the whole run
             # rather than deleting more than that share of the files.
-            argv += ["--max-delete", str(int(job.get("max_delete_percent") or 25))]
+            if force:
+                # explicit, one-off user approval: bypass the delete guard
+                argv.append("--force")
+            else:
+                argv += ["--max-delete", str(int(job.get("max_delete_percent") or 25))]
             if local_trash:
                 argv += ["--backup-dir1", local_trash]
             if remote_trash:

@@ -111,8 +111,29 @@ visible under **Synced folders → Advanced → Safety net**:
   exactly what would be copied, moved and deleted, changing nothing. Worth using before
   the first sync of any pair.
 
+- **Unmounted-disk guard.** If the local folder is suddenly empty but held files at the
+  last sync — an external disk not mounted, a network share gone, a wrong path — the sync
+  is refused before rclone even starts, so the emptiness cannot propagate to Drive.
+- **Google Drive's own bin.** rclone deletes through Drive's trash by default, so removed
+  files also stay recoverable at drive.google.com for 30 days. That is a third net,
+  independent of this app.
+
 Beyond that: mirror modes carry a red warning in the UI and ask for confirmation before
 their first run, and if rclone loses its baseline it stops and asks rather than guessing.
+
+### Deleting a folder on purpose
+
+The delete guard does not stop you deleting things — it just refuses to do it silently.
+Delete a folder of 500 photos and the next sync stops with **"Deletion blocked"** in the
+tray. Open it and you get the full list of what would be removed, then either:
+
+- **Delete these files** — the deletion is applied to the other side. Copies still go to
+  the trash folder (and Drive's own bin), so it remains reversible.
+- **Keep everything** — nothing happens; the next sync brings the files back from Drive.
+
+So a deliberate mass deletion costs you one confirmation, and an accidental one costs you
+nothing at all. Raise *Abort if deleting > %* if you find the prompt too eager, or set it
+to 100 to disable the guard entirely (the trash still protects you).
 
 ### Sync a subfolder, not your whole Drive
 

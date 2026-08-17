@@ -197,6 +197,78 @@ class DryRunDialog(Gtk.Dialog):
         return GLib.SOURCE_REMOVE
 
 
+class BlockedDeletionsDialog(Gtk.Dialog):
+    """The way out when the delete guard stopped a deletion you actually meant."""
+
+    def __init__(self, parent, runner):
+        super().__init__(
+            title="Deletion blocked — %s" % runner.name, transient_for=parent, modal=True
+        )
+        self.runner = runner
+        self.set_default_size(640, 460)
+        self.add_buttons("Open folder", 3, "Keep everything", Gtk.ResponseType.CANCEL)
+        self.approve_btn = self.add_button("Delete these files", 1)
+        self.approve_btn.get_style_context().add_class("destructive-action")
+        self.approve_btn.set_sensitive(False)
+
+        box = self.get_content_area()
+        box.set_border_width(12)
+        box.set_spacing(8)
+        box.add(
+            _label(
+                "A sync wanted to delete more than the allowed share of the files, so it "
+                "was cancelled and nothing has been deleted.\n\n"
+                "If you deleted these on purpose, approve it and the deletion is applied "
+                "to the other side too — copies still go to the trash folder first, and "
+                "on Google Drive they also land in Drive's own bin.\n\n"
+                "If this was an accident (wrong folder, disk not mounted), close this "
+                "window: the files are untouched on the other side and the next sync "
+                "will bring them back.",
+                wrap=True,
+            )
+        )
+
+        self.store = Gtk.ListStore(str)
+        view = Gtk.TreeView(model=self.store, headers_visible=False)
+        view.append_column(Gtk.TreeViewColumn("", Gtk.CellRendererText(), text=0))
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(view)
+        box.pack_start(scroller, True, True, 0)
+
+        self.count_label = _label("Checking what would be deleted…", dim=True)
+        box.pack_start(self.count_label, False, False, 0)
+
+        self.connect("response", self._on_response)
+        self.show_all()
+        self._fill(runner.blocked_deletions)
+        runner.collect_blocked_deletions(callback=self._fill)
+
+    def _fill(self, names):
+        self.store.clear()
+        for name in names or []:
+            self.store.append([name])
+        if names:
+            self.count_label.set_text("%d item(s) would be deleted." % len(names))
+            self.approve_btn.set_sensitive(True)
+        return False
+
+    def _on_response(self, _dialog, response):
+        if response == 3:
+            util.open_path(self.runner.local_path)
+            return
+        if response == 1:
+            if not _confirm(
+                self,
+                "Delete %d item(s) on the other side?" % len(self.store),
+                "This applies the deletion you already made locally. Copies are kept in "
+                "the trash folder for the retention period, so it can still be undone.",
+            ):
+                return
+            self.runner.approve_deletion()
+        self.destroy()
+
+
 class ConflictsDialog(Gtk.Dialog):
     """List the files rclone had to keep twice after a two-way conflict."""
 
@@ -874,6 +946,7 @@ class SettingsWindow(Gtk.Window):
             ("Open local folder", self._on_open_local, None),
             ("View log", self._on_view_log, None),
             ("Conflicts…", self._on_conflicts, None),
+            ("Approve deletion…", self._on_blocked, None),
         ):
             btn = Gtk.Button(label=label)
             if style:
@@ -882,6 +955,9 @@ class SettingsWindow(Gtk.Window):
             actions.pack_start(btn, False, False, 0)
             if label == "Conflicts…":
                 self.conflicts_btn = btn
+                btn.set_sensitive(False)
+            if label == "Approve deletion…":
+                self.blocked_btn = btn
                 btn.set_sensitive(False)
         box.pack_start(actions, False, False, 0)
 
@@ -1162,6 +1238,11 @@ class SettingsWindow(Gtk.Window):
             os.makedirs(path, exist_ok=True)
             util.open_path(path)
 
+    def _on_blocked(self, _btn):
+        runner = self.engine.runner(self._current_job_id)
+        if runner and runner.safety_blocked:
+            BlockedDeletionsDialog(self, runner)
+
     def _on_conflicts(self, _btn):
         runner = self.engine.runner(self._current_job_id)
         if runner and runner.conflicts:
@@ -1188,6 +1269,7 @@ class SettingsWindow(Gtk.Window):
             bits.append(runner.last_result)
         self.job_status.set_text(" · ".join(b for b in bits if b))
         self.conflicts_btn.set_sensitive(bool(runner.conflicts))
+        self.blocked_btn.set_sensitive(bool(runner.safety_blocked))
 
     # ------------------------------------------------------------ logs tab
 

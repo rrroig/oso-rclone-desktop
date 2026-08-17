@@ -18,7 +18,12 @@ from gi.repository import GLib, Gtk  # noqa: E402
 
 from . import APP_ID, APP_NAME, __version__, engine as eng, rclone, tray, util  # noqa: E402
 from .config import Config, State  # noqa: E402
-from .settings import ConflictsDialog, SettingsWindow, ask_config_password  # noqa: E402
+from .settings import (  # noqa: E402
+    BlockedDeletionsDialog,
+    ConflictsDialog,
+    SettingsWindow,
+    ask_config_password,
+)
 
 STATE_ICON = {
     eng.IDLE: tray.ICON_IDLE,
@@ -149,6 +154,14 @@ class Application:
             ("Open on Google Drive", lambda *_a: self._job_action(job["id"], "web")),
             ("View log", lambda *_a: self._job_action(job["id"], "log")),
         ]
+        if runner is not None and runner.safety_blocked:
+            entries.insert(
+                0,
+                (
+                    "⚠ Deletion blocked — review…",
+                    lambda *_a: self._job_action(job["id"], "blocked"),
+                ),
+            )
         if runner is not None and runner.conflicts:
             entries.insert(
                 0,
@@ -184,6 +197,9 @@ class Application:
             if path:
                 os.makedirs(path, exist_ok=True)
                 util.open_path(path)
+        elif action == "blocked" and runner:
+            self.open_settings(page=1)
+            BlockedDeletionsDialog(self.settings_window, runner)
         elif action == "conflicts" and runner:
             self.open_settings(page=1)
             ConflictsDialog(self.settings_window, runner)
@@ -204,7 +220,9 @@ class Application:
 
     def update_ui(self):
         overall = self.engine.overall_state()
-        signature = tuple(len(r.conflicts) for r in self.engine.runners)
+        signature = tuple(
+            (len(r.conflicts), r.safety_blocked) for r in self.engine.runners
+        )
         if signature != getattr(self, "_conflict_signature", None):
             self._conflict_signature = signature
             if getattr(self, "_menu_built", False):
