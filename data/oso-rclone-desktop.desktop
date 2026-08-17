@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=OSO Rclone Desktop
+GenericName=Cloud folder sync
+Comment=Keep folders in sync with Google Drive using rclone
+Exec=oso-rclone-desktop
+Icon=oso-rclone-desktop
+Terminal=false
+Categories=Network;FileTransfer;Utility;GTK;
+Keywords=rclone;google drive;sync;cloud;backup;dropbox;
+StartupNotify=false
+X-GNOME-UsesNotifications=true
