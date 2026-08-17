@@ -150,6 +150,118 @@ DRIVE_SCOPES = [
     ),
 ]
 
+CONSOLE_URL = "https://console.cloud.google.com/"
+CONSOLE_LIBRARY = "https://console.cloud.google.com/apis/library/drive.googleapis.com"
+CONSOLE_CONSENT = "https://console.cloud.google.com/apis/credentials/consent"
+CONSOLE_CREDENTIALS = "https://console.cloud.google.com/apis/credentials"
+CLIENT_ID_DOC = "https://rclone.org/drive/#making-your-own-client-id"
+
+CLIENT_ID_STEPS = [
+    (
+        "Create a project",
+        "Open Google Cloud Console and create a project. Any name will do — it is only "
+        "a container for the credential.",
+        CONSOLE_URL,
+    ),
+    (
+        "Enable the Google Drive API",
+        "In APIs & Services → Library, find Google Drive API and press Enable. Without "
+        "this the sign-in fails with “access not configured”.",
+        CONSOLE_LIBRARY,
+    ),
+    (
+        "Fill in the consent screen",
+        "APIs & Services → OAuth consent screen → External. App name, your email twice, "
+        "save. Then set the publishing status to In production — while it says Testing, "
+        "Google expires the token every 7 days and you have to sign in again weekly.",
+        CONSOLE_CONSENT,
+    ),
+    (
+        "Create the credential",
+        "Credentials → Create credentials → OAuth client ID → application type "
+        "Desktop app. Copy the client ID and the client secret it shows you.",
+        CONSOLE_CREDENTIALS,
+    ),
+]
+
+
+class ClientIdGuideDialog(Gtk.Dialog):
+    """Walk through creating a personal Google OAuth client, step by step."""
+
+    def __init__(self, parent):
+        super().__init__(
+            title="Create your own Google client ID", transient_for=parent, modal=True
+        )
+        self.set_default_size(640, 560)
+        self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+        done = self.add_button("Use these credentials", Gtk.ResponseType.OK)
+        done.get_style_context().add_class("suggested-action")
+
+        box = self.get_content_area()
+        box.set_border_width(14)
+        box.set_spacing(10)
+        intro = Gtk.Label(xalign=0.0)
+        intro.set_markup(
+            "rclone's shared client ID <b>is being retired and stops working during "
+            "2026</b>. Creating your own takes about five minutes, is free, and is "
+            "permanent — the credential below is yours, tied to your own Google project."
+        )
+        intro.set_line_wrap(True)
+        intro.set_max_width_chars(70)
+        box.add(intro)
+
+        for index, (title, detail, url) in enumerate(CLIENT_ID_STEPS, start=1):
+            row = Gtk.Box(spacing=10)
+            number = Gtk.Label()
+            number.set_markup("<b>%d</b>" % index)
+            number.set_valign(Gtk.Align.START)
+            row.pack_start(number, False, False, 0)
+            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            heading = Gtk.Label(xalign=0.0)
+            heading.set_markup("<b>%s</b>" % GLib.markup_escape_text(title))
+            text.add(heading)
+            text.add(_label(detail, dim=True, wrap=True))
+            row.pack_start(text, True, True, 0)
+            open_btn = Gtk.Button(label="Open")
+            open_btn.set_valign(Gtk.Align.CENTER)
+            open_btn.connect("clicked", lambda _b, u=url: util.open_url(u))
+            row.pack_start(open_btn, False, False, 0)
+            box.add(row)
+
+        box.add(
+            _label(
+                "During sign-in Google will say the app is not verified — that is normal "
+                "for a personal credential. Choose Advanced → Go to (unsafe); “the app” is "
+                "your own project.",
+                dim=True,
+                wrap=True,
+            )
+        )
+
+        grid = Gtk.Grid(column_spacing=10, row_spacing=6)
+        box.add(grid)
+        self.client_id = Gtk.Entry(placeholder_text="…apps.googleusercontent.com")
+        self.client_secret = Gtk.Entry(placeholder_text="client secret")
+        for row, (label_text, widget) in enumerate(
+            (("Client ID", self.client_id), ("Client secret", self.client_secret))
+        ):
+            label = _label(label_text)
+            label.set_halign(Gtk.Align.END)
+            grid.attach(label, 0, row, 1, 1)
+            widget.set_hexpand(True)
+            grid.attach(widget, 1, row, 1, 1)
+
+        link = Gtk.LinkButton.new_with_label(CLIENT_ID_DOC, "rclone's own instructions")
+        link.connect(
+            "activate-link", lambda *_a: (util.open_url(CLIENT_ID_DOC), True)[1]
+        )
+        box.add(link)
+        box.show_all()
+
+    def values(self):
+        return self.client_id.get_text().strip(), self.client_secret.get_text().strip()
+
+
 CLIENT_ID_HELP = (
     "rclone ships a shared client ID, so the Google consent screen says “rclone” and "
     "everybody using rclone shares the same API quota, which Google throttles. Creating "
@@ -213,37 +325,56 @@ class ConnectAccountDialog(Gtk.Dialog):
             )
         )
 
-        advanced = Gtk.Expander(label="Use my own Google client ID (recommended)")
-        box.add(advanced)
-        adv_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=8)
-        advanced.add(adv_box)
-        adv_box.add(_label(CLIENT_ID_HELP, dim=True, wrap=True))
-        link = Gtk.LinkButton.new_with_label(
-            "https://rclone.org/drive/#making-your-own-client-id",
-            "How to create one (rclone documentation)",
+        frame = Gtk.Frame(label="Google client ID")
+        box.add(frame)
+        client_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        client_box.set_border_width(10)
+        frame.add(client_box)
+
+        warning = Gtk.Label(xalign=0.0)
+        warning.set_markup(
+            "<span foreground='#c0392b'>⚠ rclone's shared client ID is being retired and "
+            "will stop working during 2026.</span> Using your own is free, takes about "
+            "five minutes, and keeps this working afterwards."
         )
-        link.connect(
-            "activate-link",
-            lambda *_a: (
-                util.open_url("https://rclone.org/drive/#making-your-own-client-id"),
-                True,
-            )[1],
-        )
-        adv_box.add(link)
-        adv_grid = Gtk.Grid(column_spacing=10, row_spacing=6)
-        adv_box.add(adv_grid)
-        self.client_id = Gtk.Entry(placeholder_text="client ID (optional)")
-        self.client_secret = Gtk.Entry(placeholder_text="client secret (optional)")
+        warning.set_line_wrap(True)
+        warning.set_max_width_chars(70)
+        client_box.add(warning)
+
+        client_grid = Gtk.Grid(column_spacing=10, row_spacing=6)
+        client_box.add(client_grid)
+        self.client_id = Gtk.Entry(placeholder_text="…apps.googleusercontent.com")
+        self.client_secret = Gtk.Entry(placeholder_text="client secret")
         for row, (text, widget) in enumerate(
             (("Client ID", self.client_id), ("Client secret", self.client_secret))
         ):
             label = _label(text)
             label.set_halign(Gtk.Align.END)
-            adv_grid.attach(label, 0, row, 1, 1)
+            client_grid.attach(label, 0, row, 1, 1)
             widget.set_hexpand(True)
-            adv_grid.attach(widget, 1, row, 1, 1)
+            client_grid.attach(widget, 1, row, 1, 1)
+
+        buttons = Gtk.Box(spacing=6)
+        guide = Gtk.Button(label="Show me how…")
+        guide.connect("clicked", self._on_guide)
+        buttons.pack_start(guide, False, False, 0)
+        self.shared_note = _label(
+            "Leave both empty to use the shared one while it lasts.", dim=True, wrap=True
+        )
+        buttons.pack_start(self.shared_note, True, True, 0)
+        client_box.add(buttons)
 
         box.show_all()
+
+    def _on_guide(self, _btn):
+        dialog = ClientIdGuideDialog(self)
+        if dialog.run() == Gtk.ResponseType.OK:
+            client_id, secret = dialog.values()
+            if client_id:
+                self.client_id.set_text(client_id)
+            if secret:
+                self.client_secret.set_text(secret)
+        dialog.destroy()
 
     def _on_scope_changed(self, _combo):
         key = self.scope_combo.get_active_id()

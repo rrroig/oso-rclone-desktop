@@ -94,8 +94,9 @@ def access_summary(remote):
     bits = [SCOPE_LABELS.get(conf.get("scope", ""), conf.get("scope", ""))]
     if conf.get("root_folder_id"):
         bits.append("pinned to one folder")
-    if conf.get("client_id"):
-        bits.append("own client ID")
+    bits.append(
+        "own client ID" if conf.get("client_id") else "⚠ shared client ID (retires 2026)"
+    )
     return ", ".join(b for b in bits if b)
 
 

@@ -226,11 +226,14 @@ explanation, because it sounds like handing your Drive to a stranger.
   directly**. No file and no token ever reaches a server belonging to the rclone project
   or to this one.
 - **The token lives in `~/.config/rclone/rclone.conf`** on this computer and nowhere else.
-- **The app name on the consent screen is rclone's**, because rclone ships a shared
-  client ID used by all its users. That is also why Google throttles it. Supplying your
-  own client ID — a free, five-minute job in Google Cloud Console — makes the consent
-  screen show your own project, gives you the quota to yourself, and lets you revoke the
-  whole thing from your own console. The Connect dialog has a field for it.
+- **You need your own client ID.** rclone ships a shared one, and rclone 1.75 warns that
+  it "is being retired and will stop working during 2026". Creating your own is free and
+  takes about five minutes; the Connect dialog has a **Show me how…** guide that walks
+  through the four steps and opens each Google Cloud Console page for you:
+  create a project → enable the Google Drive API → fill the OAuth consent screen and set
+  it to *In production* → create a **Desktop app** OAuth client. Paste the ID and secret
+  and the consent screen then shows your own project instead of rclone's, with the API
+  quota to yourself and revocation in your own hands.
 - **Revoke any time** at [Google account permissions](https://myaccount.google.com/permissions).
 - **If you do make your own client ID**, set the OAuth consent screen to *In production*.
   Google expires refresh tokens after 7 days while a project sits in *Testing*, which
