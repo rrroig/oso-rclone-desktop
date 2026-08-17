@@ -386,7 +386,7 @@ class JobRunner:
                 )
                 return False
         if self.mode == "bisync" and not self.resync_done and reason != "resync":
-            if not rclone.bisync_workdir_has_listings(local, self.remote_spec):
+            if not rclone.bisync_workdir_has_listings(self.local_path, self.remote_spec):
                 self._set_state(NEEDS_RESYNC)
                 return False
         return True

@@ -482,7 +482,13 @@ class ConnectAccountDialog(Gtk.Dialog):
 
 
 class ChooseFoldersDialog(Gtk.Dialog):
-    """After connecting an account: pick which folders to sync, not the lot."""
+    """After connecting an account: pick exactly what to sync.
+
+    The tree loads a level at a time, so a Drive with thousands of folders costs
+    one listing per folder the user actually opens.
+    """
+
+    COL_ACTIVE, COL_LABEL, COL_PATH, COL_LOADED = range(4)
 
     def __init__(self, parent, remote, default_base=None):
         super().__init__(
@@ -491,9 +497,9 @@ class ChooseFoldersDialog(Gtk.Dialog):
             modal=True,
         )
         self.remote = remote
-        self.set_default_size(620, 520)
+        self.set_default_size(640, 560)
         self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
-        self.ok_btn = self.add_button("Add selected folders", Gtk.ResponseType.OK)
+        self.ok_btn = self.add_button("Add selected", Gtk.ResponseType.OK)
         self.ok_btn.get_style_context().add_class("suggested-action")
         self.ok_btn.set_sensitive(False)
 
@@ -502,9 +508,9 @@ class ChooseFoldersDialog(Gtk.Dialog):
         box.set_spacing(8)
         box.add(
             _label(
-                "Tick the top-level folders of the Drive you want kept in sync. Each one "
-                "becomes its own pair, so you can give them different settings later, and "
-                "everything you leave unticked is never read or touched.",
+                "Tick what you want kept in sync. Expand a folder to reach the ones "
+                "inside it — each tick becomes its own pair, and anything left unticked "
+                "is never read or touched.",
                 wrap=True,
             )
         )
@@ -521,19 +527,28 @@ class ChooseFoldersDialog(Gtk.Dialog):
         base_row.pack_start(browse, False, False, 0)
         box.pack_start(base_row, False, False, 0)
 
-        self.store = Gtk.ListStore(bool, str)
-        view = Gtk.TreeView(model=self.store, headers_visible=False)
+        self.store = Gtk.TreeStore(bool, str, str, bool)
+        self.view = Gtk.TreeView(model=self.store, headers_visible=False)
         toggle = Gtk.CellRendererToggle()
         toggle.connect("toggled", self._on_toggled)
-        view.append_column(Gtk.TreeViewColumn("", toggle, active=0))
-        view.append_column(Gtk.TreeViewColumn("", Gtk.CellRendererText(), text=1))
+        self.view.append_column(Gtk.TreeViewColumn("", toggle, active=self.COL_ACTIVE))
+        self.view.append_column(
+            Gtk.TreeViewColumn("", Gtk.CellRendererText(), text=self.COL_LABEL)
+        )
+        self.view.connect("row-expanded", self._on_expanded)
         scroller = Gtk.ScrolledWindow()
         scroller.set_shadow_type(Gtk.ShadowType.IN)
-        scroller.add(view)
+        scroller.add(self.view)
         box.pack_start(scroller, True, True, 0)
 
         self.status = _label("Reading your Drive…", dim=True)
         box.pack_start(self.status, False, False, 0)
+
+        self.root_files = Gtk.CheckButton(
+            label="Also sync the files sitting loose at the top level (not in any folder)"
+        )
+        self.root_files.connect("toggled", lambda *_a: self._update_ok())
+        box.pack_start(self.root_files, False, False, 0)
 
         self.whole_drive = Gtk.CheckButton(
             label="Sync the entire Drive instead (everything, including future folders)"
@@ -542,58 +557,121 @@ class ChooseFoldersDialog(Gtk.Dialog):
         box.pack_start(self.whole_drive, False, False, 0)
 
         self.show_all()
-        self._load()
+        self._load(None, "")
 
-    def _load(self):
+    # ---------------------------------------------------------- listing
+
+    def _load(self, parent_iter, path):
         def worker():
-            try:
-                proc = subprocess.run(
-                    [rclone.binary(), "lsjson", "--dirs-only", "%s:" % self.remote],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if proc.returncode != 0:
-                    names, error = [], proc.stderr.strip().splitlines()[-1:] or ["failed"]
-                else:
-                    names = sorted(
-                        item["Name"] for item in json.loads(proc.stdout or "[]")
-                    )
-                    error = []
-            except Exception as exc:  # noqa: BLE001 - shown in the dialog
-                names, error = [], [str(exc)]
-            GLib.idle_add(self._fill, names, " ".join(error))
+            names, error = self._list_dirs(path)
+            GLib.idle_add(self._fill, parent_iter, path, names, error)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _fill(self, names, error):
-        self.store.clear()
+    def _list_dirs(self, path):
+        spec = "%s:%s" % (self.remote, path)
+        try:
+            proc = subprocess.run(
+                [rclone.binary(), "lsjson", "--dirs-only", spec],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if proc.returncode != 0:
+                return [], (proc.stderr.strip().splitlines() or ["listing failed"])[-1]
+            return sorted(item["Name"] for item in json.loads(proc.stdout or "[]")), ""
+        except Exception as exc:  # noqa: BLE001 - surfaced in the dialog
+            return [], str(exc)
+
+    def _fill(self, parent_iter, path, names, error):
+        # drop the placeholder that made the expander appear
+        if parent_iter is not None:
+            child = self.store.iter_children(parent_iter)
+            while child is not None:
+                nxt = self.store.iter_next(child)
+                if not self.store[child][self.COL_PATH]:
+                    self.store.remove(child)
+                child = nxt
+            self.store[parent_iter][self.COL_LOADED] = True
+
         for name in names:
-            if name != util.REMOTE_TRASH:
-                self.store.append([False, name])
+            if not path and name == util.REMOTE_TRASH:
+                continue  # our own trash folder is not something to sync
+            child_path = "%s/%s" % (path, name) if path else name
+            row = self.store.append(parent_iter, [False, name, child_path, False])
+            self.store.append(row, [False, "…", "", False])  # lazy placeholder
+
         if error:
             self.status.set_markup(
-                "<span foreground='red'>%s</span>" % GLib.markup_escape_text(error)
+                "<span foreground='#c0392b'>%s</span>" % GLib.markup_escape_text(error)
             )
-        elif names:
-            self.status.set_text("%d folder(s) at the top level." % len(self.store))
-        else:
+        elif parent_iter is None:
             self.status.set_text(
-                "No folders at the top level — the Drive is empty, or this account only "
-                "sees files it created."
+                "%d folder(s) at the top level — expand any of them to go deeper."
+                % len(names)
+                if names
+                else "No folders at the top level."
             )
         return GLib.SOURCE_REMOVE
 
+    def _on_expanded(self, _view, treeiter, _path):
+        if self.store[treeiter][self.COL_LOADED]:
+            return
+        child = self.store.iter_children(treeiter)
+        if child is not None and not self.store[child][self.COL_PATH]:
+            self.store[treeiter][self.COL_LOADED] = True  # avoid a double load
+            self._load(treeiter, self.store[treeiter][self.COL_PATH])
+
+    # ---------------------------------------------------------- selection
+
     def _on_toggled(self, _cell, path):
-        self.store[path][0] = not self.store[path][0]
+        treeiter = self.store.get_iter(path)
+        value = not self.store[treeiter][self.COL_ACTIVE]
+        self.store[treeiter][self.COL_ACTIVE] = value
+        if value:
+            # a pair inside another pair would sync the same files twice
+            self._untick_descendants(treeiter)
+            self._untick_ancestors(treeiter)
         self._update_ok()
 
+    def _untick_descendants(self, treeiter):
+        child = self.store.iter_children(treeiter)
+        while child is not None:
+            self.store[child][self.COL_ACTIVE] = False
+            self._untick_descendants(child)
+            child = self.store.iter_next(child)
+
+    def _untick_ancestors(self, treeiter):
+        parent = self.store.iter_parent(treeiter)
+        while parent is not None:
+            self.store[parent][self.COL_ACTIVE] = False
+            parent = self.store.iter_parent(parent)
+
+    def _checked(self):
+        found = []
+
+        def walk(treeiter):
+            while treeiter is not None:
+                if self.store[treeiter][self.COL_ACTIVE]:
+                    found.append(self.store[treeiter][self.COL_PATH])
+                walk(self.store.iter_children(treeiter))
+                treeiter = self.store.iter_next(treeiter)
+
+        walk(self.store.get_iter_first())
+        return [p for p in found if p]
+
     def _on_whole_toggled(self, _btn):
+        whole = self.whole_drive.get_active()
+        self.view.set_sensitive(not whole)
+        self.root_files.set_sensitive(not whole)
         self._update_ok()
 
     def _update_ok(self):
-        any_checked = any(row[0] for row in self.store)
-        self.ok_btn.set_sensitive(any_checked or self.whole_drive.get_active())
+        self.ok_btn.set_sensitive(
+            bool(self._checked())
+            or self.root_files.get_active()
+            or self.whole_drive.get_active()
+        )
 
     def _on_browse_base(self, _btn):
         dialog = Gtk.FileChooserDialog(
@@ -611,10 +689,14 @@ class ChooseFoldersDialog(Gtk.Dialog):
         dialog.destroy()
 
     def selection(self):
-        """(base_path, [folder names], whole_drive)."""
+        """(base_path, [folder paths], root_files_only, whole_drive)."""
         base = self.base_entry.get_text().strip() or os.path.expanduser("~/GoogleDrive")
-        chosen = [row[1] for row in self.store if row[0]]
-        return base, chosen, self.whole_drive.get_active()
+        return (
+            base,
+            self._checked(),
+            self.root_files.get_active(),
+            self.whole_drive.get_active(),
+        )
 
 
 class DryRunDialog(Gtk.Dialog):
@@ -1079,7 +1161,7 @@ class SettingsWindow(Gtk.Window):
             ("Reconnect", self._on_reconnect),
             ("Test", self._on_test_remote),
             ("Remove", self._on_remove_remote),
-            ("Refresh", lambda *_a: self.refresh_remotes()),
+            ("Refresh", lambda *_a: self.refresh_remotes(force=True)),
         ):
             btn = Gtk.Button(label=label)
             btn.connect("clicked", handler)
@@ -1176,7 +1258,9 @@ class SettingsWindow(Gtk.Window):
         self.rclone_install_btn.set_no_show_all(not visible)
         self.rclone_install_btn.set_visible(visible)
 
-    def refresh_remotes(self):
+    def refresh_remotes(self, force=False):
+        if force:
+            rclone.invalidate_cache()
         selected = self.selected_remote()
         self.remote_store.clear()
         for name, rtype in rclone.listremotes():
@@ -1223,8 +1307,9 @@ class SettingsWindow(Gtk.Window):
         GLib.timeout_add_seconds(5, self._poll_rclone_install)
 
     def _poll_rclone_install(self):
+        rclone.invalidate_cache()
         self.refresh_rclone_status()
-        self.refresh_remotes()
+        self.refresh_remotes(force=True)
         return GLib.SOURCE_REMOVE
 
     def _on_add_drive(self, _btn):
@@ -1270,7 +1355,8 @@ class SettingsWindow(Gtk.Window):
 
     def _after_connect(self, name):
         """Once the token exists, ask what to sync instead of assuming everything."""
-        self.refresh_remotes()
+        rclone.invalidate_cache()
+        self.refresh_remotes(force=True)
         if name not in {remote for remote, _t in rclone.listremotes()}:
             return
         if not rclone.has_token(name):
@@ -1291,7 +1377,7 @@ class SettingsWindow(Gtk.Window):
             return
         dialog = ChooseFoldersDialog(self, remote)
         response = dialog.run()
-        base, folders, whole = dialog.selection()
+        base, folders, root_files, whole = dialog.selection()
         dialog.destroy()
         if response != Gtk.ResponseType.OK:
             return
@@ -1311,14 +1397,27 @@ class SettingsWindow(Gtk.Window):
                     )
                 )
             )
+        if root_files and not whole:
+            # the whole account, filtered down to the files that sit at its root:
+            # "*/**" drops everything inside any folder, on both sides
+            job = cfgmod.new_job(
+                name="Top-level files",
+                remote=remote,
+                remote_path="",
+                local_path=base,
+                allow_whole_drive=True,
+                enabled=False,
+            )
+            job["excludes"] = ["*/**"] + list(job["excludes"])
+            created.append(self.config.add_job(job))
         for folder in folders:
             created.append(
                 self.config.add_job(
                     cfgmod.new_job(
-                        name=folder,
+                        name=folder.replace("/", " / "),
                         remote=remote,
                         remote_path=folder,
-                        local_path=os.path.join(base, folder),
+                        local_path=os.path.join(base, *folder.split("/")),
                         enabled=False,
                     )
                 )
@@ -1382,7 +1481,7 @@ class SettingsWindow(Gtk.Window):
             "empty to sync it whole. Undo it with: rclone config update %s root_folder_id \"\""
             % remote,
         )
-        self.refresh_remotes()
+        self.refresh_remotes(force=True)
 
     def _on_reconnect(self, _btn):
         remote = self.selected_remote()
@@ -1425,7 +1524,8 @@ class SettingsWindow(Gtk.Window):
         if not _confirm(self, "Remove remote “%s”?" % remote, body):
             return
         subprocess.run([rclone.binary(), "config", "delete", remote], capture_output=True)
-        self.refresh_remotes()
+        rclone.invalidate_cache()
+        self.refresh_remotes(force=True)
 
     # ------------------------------------------------------------ folders tab
 

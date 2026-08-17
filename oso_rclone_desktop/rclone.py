@@ -5,6 +5,8 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 
 MIN_BISYNC_VERSION = (1, 66, 0)  # --resilient/--recover/--conflict-resolve
 MIN_VERSION = (1, 58, 0)  # bisync exists at all
@@ -34,6 +36,45 @@ def is_installed():
     return bool(shutil.which(path) or os.path.isfile(path))
 
 
+# rclone is a ~70 MB binary: spawning it several times at once to answer the
+# same question stalls the whole desktop. Every read-only query goes through a
+# short-lived cache, and identical queries are collapsed into one process.
+_CACHE_LOCK = threading.Lock()
+_FETCH_LOCKS = {}
+_CACHE = {}
+
+CONFIG_TTL = 5.0      # config dump: cheap, but re-read constantly
+ABOUT_TTL = 900.0     # quota: a network round trip, refresh every 15 min
+VERSION_TTL = 300.0
+
+
+def _cached(key, ttl, producer):
+    """Return a cached value, computing it at most once at a time."""
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if entry and now - entry[0] < ttl:
+            return entry[1]
+        fetch_lock = _FETCH_LOCKS.setdefault(key, threading.Lock())
+
+    with fetch_lock:
+        # another thread may have filled it while we queued for the lock
+        with _CACHE_LOCK:
+            entry = _CACHE.get(key)
+            if entry and time.monotonic() - entry[0] < ttl:
+                return entry[1]
+        value = producer()
+        with _CACHE_LOCK:
+            _CACHE[key] = (time.monotonic(), value)
+        return value
+
+
+def invalidate_cache():
+    """Drop cached answers after something changed the rclone configuration."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
 def _run(args, timeout=25):
     env = dict(os.environ)
     env.setdefault("RCLONE_ASK_PASSWORD", "false")
@@ -48,7 +89,11 @@ def _run(args, timeout=25):
 
 def version():
     """Return (tuple, raw string) or (None, '') if rclone is unusable."""
-    if not is_installed():
+    return _cached("version", VERSION_TTL, _version_uncached)
+
+
+def _version_uncached():
+    if not shutil.which(binary()) and not os.path.isfile(binary()):
         return None, ""
     try:
         out = _run(["version"], timeout=10).stdout
@@ -107,10 +152,18 @@ def remote_type(name):
     return None
 
 
-def about(remote):
-    """Quota info for a remote: dict with used/total/free, or None."""
+def about(remote, ttl=ABOUT_TTL):
+    """Quota info for a remote: dict with used/total/free, or None.
+
+    Cached and collapsed: several sync pairs on one account ask for this at
+    the same moment, and each answer costs a network round trip.
+    """
     if not remote:
         return None
+    return _cached("about:%s" % remote, ttl, lambda: _about_uncached(remote))
+
+
+def _about_uncached(remote):
     try:
         proc = _run(["about", "%s:" % remote, "--json"], timeout=30)
         if proc.returncode != 0:
@@ -211,6 +264,7 @@ def set_root_folder(remote, folder_id_value):
             ["config", "update", remote, "root_folder_id", folder_id_value or ""],
             timeout=30,
         )
+        invalidate_cache()
         return proc.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
@@ -230,6 +284,10 @@ def root_folder(remote):
 
 
 def _config_dump():
+    return _cached("config", CONFIG_TTL, _config_dump_uncached)
+
+
+def _config_dump_uncached():
     try:
         proc = _run(["config", "dump"], timeout=15)
         return json.loads(proc.stdout or "{}")
