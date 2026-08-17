@@ -4,3 +4,9 @@ dist/
 build/
 *.deb
 .venv/
+
+# never commit Google OAuth credentials (this repo is public)
+client_secret*.json
+credentials*.json
+*.client_secret.json
+rclone.conf

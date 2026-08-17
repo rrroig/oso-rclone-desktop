@@ -185,6 +185,58 @@ CLIENT_ID_STEPS = [
 ]
 
 
+def load_client_json(parent):
+    """Read client_id/client_secret from the JSON Google Cloud Console hands out.
+
+    Returns (client_id, client_secret) or (None, None). Nothing is copied or
+    kept: only the two strings are read out of the file the user points at.
+    """
+    chooser = Gtk.FileChooserDialog(
+        title="Select the credential JSON downloaded from Google",
+        transient_for=parent,
+        action=Gtk.FileChooserAction.OPEN,
+    )
+    chooser.add_buttons(
+        Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK
+    )
+    json_filter = Gtk.FileFilter()
+    json_filter.set_name("JSON credential")
+    json_filter.add_pattern("*.json")
+    chooser.add_filter(json_filter)
+    chooser.set_current_folder(os.path.expanduser("~/Downloads"))
+    path = chooser.get_filename() if chooser.run() == Gtk.ResponseType.OK else None
+    path = path or None
+    chooser.destroy()
+    if not path:
+        return None, None
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        _message(parent, Gtk.MessageType.ERROR, "Could not read that file", str(exc))
+        return None, None
+    section = data.get("installed") or data.get("web") or data
+    client_id = (section.get("client_id") or "").strip()
+    secret = (section.get("client_secret") or "").strip()
+    if not client_id:
+        _message(
+            parent,
+            Gtk.MessageType.ERROR,
+            "No client ID in that file",
+            "Expected the JSON of an OAuth client of type “Desktop app”.",
+        )
+        return None, None
+    if data.get("web"):
+        _message(
+            parent,
+            Gtk.MessageType.WARNING,
+            "That is a Web application credential",
+            "rclone needs an OAuth client of type “Desktop app”. Create one of those in "
+            "Credentials → Create credentials → OAuth client ID.",
+        )
+    return client_id, secret
+
+
 class ClientIdGuideDialog(Gtk.Dialog):
     """Walk through creating a personal Google OAuth client, step by step."""
 
@@ -251,12 +303,36 @@ class ClientIdGuideDialog(Gtk.Dialog):
             widget.set_hexpand(True)
             grid.attach(widget, 1, row, 1, 1)
 
+        load_row = Gtk.Box(spacing=6)
+        load_btn = Gtk.Button(label="Load from downloaded JSON…")
+        load_btn.connect("clicked", self._on_load_json)
+        load_row.pack_start(load_btn, False, False, 0)
+        load_row.pack_start(
+            _label(
+                "Google offers the credential as a JSON download; this reads the two "
+                "values out of it. Keep that file out of any git repository.",
+                dim=True,
+                wrap=True,
+            ),
+            True,
+            True,
+            0,
+        )
+        box.add(load_row)
+
         link = Gtk.LinkButton.new_with_label(CLIENT_ID_DOC, "rclone's own instructions")
         link.connect(
             "activate-link", lambda *_a: (util.open_url(CLIENT_ID_DOC), True)[1]
         )
         box.add(link)
         box.show_all()
+
+    def _on_load_json(self, _btn):
+        client_id, secret = load_client_json(self)
+        if client_id:
+            self.client_id.set_text(client_id)
+        if secret:
+            self.client_secret.set_text(secret)
 
     def values(self):
         return self.client_id.get_text().strip(), self.client_secret.get_text().strip()
@@ -358,6 +434,10 @@ class ConnectAccountDialog(Gtk.Dialog):
         guide = Gtk.Button(label="Show me how…")
         guide.connect("clicked", self._on_guide)
         buttons.pack_start(guide, False, False, 0)
+        load_btn = Gtk.Button(label="Load JSON…")
+        load_btn.set_tooltip_text("Read the credential Google let you download")
+        load_btn.connect("clicked", self._on_load_json)
+        buttons.pack_start(load_btn, False, False, 0)
         self.shared_note = _label(
             "Leave both empty to use the shared one while it lasts.", dim=True, wrap=True
         )
@@ -365,6 +445,13 @@ class ConnectAccountDialog(Gtk.Dialog):
         client_box.add(buttons)
 
         box.show_all()
+
+    def _on_load_json(self, _btn):
+        client_id, secret = load_client_json(self)
+        if client_id:
+            self.client_id.set_text(client_id)
+        if secret:
+            self.client_secret.set_text(secret)
 
     def _on_guide(self, _btn):
         dialog = ClientIdGuideDialog(self)
