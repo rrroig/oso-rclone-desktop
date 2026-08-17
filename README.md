@@ -208,6 +208,39 @@ guess and reports **"First sync required"** rather than deleting anything; run
 
 ## Security of the Google sign-in
 
+### What the consent screen is actually granting
+
+Google shows "rclone wants access to your Google Drive" and that wording deserves an
+explanation, because it sounds like handing your Drive to a stranger.
+
+- **Everything runs locally.** rclone is a binary on your machine. It opens a one-shot
+  web server on `127.0.0.1:53682`, Google redirects your browser there with an
+  authorisation code, and rclone swaps that code for a token **talking to Google
+  directly**. No file and no token ever reaches a server belonging to the rclone project
+  or to this one.
+- **The token lives in `~/.config/rclone/rclone.conf`** on this computer and nowhere else.
+- **The app name on the consent screen is rclone's**, because rclone ships a shared
+  client ID used by all its users. That is also why Google throttles it. Supplying your
+  own client ID — a free, five-minute job in Google Cloud Console — makes the consent
+  screen show your own project, gives you the quota to yourself, and lets you revoke the
+  whole thing from your own console. The Connect dialog has a field for it.
+- **Revoke any time** at [Google account permissions](https://myaccount.google.com/permissions).
+
+### Ask for less than everything
+
+Google has no "just this folder" permission, so any Drive grant covers the whole account.
+Two things narrow it down, both in the app:
+
+| Choice | Effect |
+|---|---|
+| **Access to request** in the Connect dialog | `drive` full access (needed for two-way sync of folders that already have files), `drive.file` where Google hides everything rclone did not create, or `drive.readonly` for download-only pairs. |
+| **Accounts → Restrict to folder…** | Pins the account to a single folder via `root_folder_id`. rclone then cannot see or touch anything outside it, no matter what this app asks for. |
+
+The Accounts list shows what each account actually granted — access level, whether it is
+pinned to a folder, and whether it uses your own client ID.
+
+### The rest
+
 - Sign-in uses **OAuth in your browser**. The app never sees, asks for, or stores
   your Google password.
 - rclone stores the resulting **token** in `~/.config/rclone/rclone.conf`. Anyone

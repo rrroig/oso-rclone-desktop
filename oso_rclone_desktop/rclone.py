@@ -73,17 +73,30 @@ def version_ok():
 
 def listremotes():
     """List configured remotes as [(name, type), ...]."""
-    if not is_installed():
-        return []
-    try:
-        proc = _run(["config", "dump"], timeout=15)
-        data = json.loads(proc.stdout or "{}")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return []
-    remotes = []
-    for name, conf in sorted(data.items()):
-        remotes.append((name, (conf or {}).get("type", "?")))
-    return remotes
+    return [(name, conf.get("type", "?")) for name, conf in sorted(_config_dump().items())]
+
+
+SCOPE_LABELS = {
+    "": "full access",
+    "drive": "full access",
+    "drive.file": "only files it created",
+    "drive.readonly": "read-only",
+    "drive.appfolder": "app folder only",
+    "drive.metadata.readonly": "metadata only",
+}
+
+
+def access_summary(remote):
+    """Human description of what a remote is allowed to touch."""
+    conf = _config_dump().get(remote) or {}
+    if conf.get("type") != "drive":
+        return conf.get("type", "")
+    bits = [SCOPE_LABELS.get(conf.get("scope", ""), conf.get("scope", ""))]
+    if conf.get("root_folder_id"):
+        bits.append("pinned to one folder")
+    if conf.get("client_id"):
+        bits.append("own client ID")
+    return ", ".join(b for b in bits if b)
 
 
 def remote_type(name):
@@ -168,6 +181,53 @@ def check_config_password(password):
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0
+
+
+def folder_id(remote, path):
+    """Google Drive id of a folder, used to pin a remote to it."""
+    path = (path or "").strip("/")
+    if not path:
+        return None
+    parent, _slash, name = path.rpartition("/")
+    try:
+        proc = _run(
+            ["lsjson", "--dirs-only", "%s:%s" % (remote, parent)], timeout=60
+        )
+        if proc.returncode != 0:
+            return None
+        for entry in json.loads(proc.stdout or "[]"):
+            if entry.get("Name") == name:
+                return entry.get("ID")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return None
+
+
+def set_root_folder(remote, folder_id_value):
+    """Confine a remote to one folder (rclone can then see nothing else)."""
+    try:
+        proc = _run(
+            ["config", "update", remote, "root_folder_id", folder_id_value or ""],
+            timeout=30,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def root_folder(remote):
+    for name, conf in _config_dump().items():
+        if name == remote:
+            return conf.get("root_folder_id") or ""
+    return ""
+
+
+def _config_dump():
+    try:
+        proc = _run(["config", "dump"], timeout=15)
+        return json.loads(proc.stdout or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
 
 
 def config_create_argv(name, backend="drive", extra=None):

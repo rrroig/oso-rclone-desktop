@@ -127,6 +127,138 @@ def ask_config_password(parent=None):
         error.set_markup("<span foreground='red'>Wrong password — try again.</span>")
 
 
+DRIVE_SCOPES = [
+    (
+        "drive",
+        "Full access to my Drive",
+        "Read, change and delete anything in the Drive. Required for two-way sync of "
+        "folders that already contain files, because rclone has to see them.",
+    ),
+    (
+        "drive.file",
+        "Only files this app creates",
+        "Google hides everything else from rclone entirely — it cannot even list the "
+        "rest of your Drive. Works when the Drive folder starts empty and is only ever "
+        "filled through this app; files you later add from the Drive website stay "
+        "invisible and will not come down.",
+    ),
+    (
+        "drive.readonly",
+        "Read-only",
+        "Can download but never modify or delete anything on Drive. Use it with the "
+        "download-only sync modes.",
+    ),
+]
+
+CLIENT_ID_HELP = (
+    "rclone ships a shared client ID, so the Google consent screen says “rclone” and "
+    "everybody using rclone shares the same API quota, which Google throttles. Creating "
+    "your own client ID in Google Cloud Console (free) fixes both: the consent screen "
+    "shows your own project, the quota is yours alone, and you can revoke it yourself. "
+    "Either way the token is only ever stored on this computer."
+)
+
+
+class ConnectAccountDialog(Gtk.Dialog):
+    """Ask what access to request before sending the user to Google."""
+
+    def __init__(self, parent, default_name):
+        super().__init__(title="Connect Google Drive", transient_for=parent, modal=True)
+        self.set_default_size(620, 100)
+        self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+        connect = self.add_button("Sign in with Google", Gtk.ResponseType.OK)
+        connect.get_style_context().add_class("suggested-action")
+        self.set_default_response(Gtk.ResponseType.OK)
+
+        box = self.get_content_area()
+        box.set_border_width(14)
+        box.set_spacing(10)
+
+        grid = Gtk.Grid(column_spacing=10, row_spacing=8)
+        box.add(grid)
+
+        name_label = _label("Account name")
+        name_label.set_halign(Gtk.Align.END)
+        grid.attach(name_label, 0, 0, 1, 1)
+        self.name_entry = Gtk.Entry(text=default_name)
+        self.name_entry.set_hexpand(True)
+        grid.attach(self.name_entry, 1, 0, 1, 1)
+
+        scope_label = _label("Access to request")
+        scope_label.set_halign(Gtk.Align.END)
+        grid.attach(scope_label, 0, 1, 1, 1)
+        self.scope_combo = Gtk.ComboBoxText()
+        for key, label, _help in DRIVE_SCOPES:
+            self.scope_combo.append(key, label)
+        self.scope_combo.set_active_id("drive")
+        self.scope_combo.connect("changed", self._on_scope_changed)
+        grid.attach(self.scope_combo, 1, 1, 1, 1)
+
+        self.scope_help = _label("", dim=True, wrap=True)
+        box.add(self.scope_help)
+        self._on_scope_changed(None)
+
+        box.add(
+            _label(
+                "Sign-in happens in your browser and this app never sees your password. "
+                "Google grants a token to rclone running on this computer; nothing is sent "
+                "to any third-party server. You can withdraw it at any time from your "
+                "Google account's security settings.",
+                dim=True,
+                wrap=True,
+            )
+        )
+
+        advanced = Gtk.Expander(label="Use my own Google client ID (recommended)")
+        box.add(advanced)
+        adv_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=8)
+        advanced.add(adv_box)
+        adv_box.add(_label(CLIENT_ID_HELP, dim=True, wrap=True))
+        link = Gtk.LinkButton.new_with_label(
+            "https://rclone.org/drive/#making-your-own-client-id",
+            "How to create one (rclone documentation)",
+        )
+        link.connect(
+            "activate-link",
+            lambda *_a: (
+                util.open_url("https://rclone.org/drive/#making-your-own-client-id"),
+                True,
+            )[1],
+        )
+        adv_box.add(link)
+        adv_grid = Gtk.Grid(column_spacing=10, row_spacing=6)
+        adv_box.add(adv_grid)
+        self.client_id = Gtk.Entry(placeholder_text="client ID (optional)")
+        self.client_secret = Gtk.Entry(placeholder_text="client secret (optional)")
+        for row, (text, widget) in enumerate(
+            (("Client ID", self.client_id), ("Client secret", self.client_secret))
+        ):
+            label = _label(text)
+            label.set_halign(Gtk.Align.END)
+            adv_grid.attach(label, 0, row, 1, 1)
+            widget.set_hexpand(True)
+            adv_grid.attach(widget, 1, row, 1, 1)
+
+        box.show_all()
+
+    def _on_scope_changed(self, _combo):
+        key = self.scope_combo.get_active_id()
+        for scope, _label_text, help_text in DRIVE_SCOPES:
+            if scope == key:
+                self.scope_help.set_text(help_text)
+                return
+
+    def values(self):
+        options = ["scope=%s" % (self.scope_combo.get_active_id() or "drive")]
+        client_id = self.client_id.get_text().strip()
+        secret = self.client_secret.get_text().strip()
+        if client_id:
+            options.append("client_id=%s" % client_id)
+        if secret:
+            options.append("client_secret=%s" % secret)
+        return self.name_entry.get_text().strip(), options
+
+
 class DryRunDialog(Gtk.Dialog):
     """Show exactly what a sync would do, without touching a single file."""
 
@@ -545,9 +677,9 @@ class SettingsWindow(Gtk.Window):
             0,
         )
 
-        self.remote_store = Gtk.ListStore(str, str, str)  # name, type, quota
+        self.remote_store = Gtk.ListStore(str, str, str, str)  # name, type, access, quota
         self.remote_view = Gtk.TreeView(model=self.remote_store)
-        for idx, title in enumerate(("Remote", "Type", "Usage")):
+        for idx, title in enumerate(("Account", "Type", "Access granted", "Usage")):
             renderer = Gtk.CellRendererText()
             column = Gtk.TreeViewColumn(title, renderer, text=idx)
             column.set_resizable(True)
@@ -567,6 +699,7 @@ class SettingsWindow(Gtk.Window):
         buttons.pack_start(add_btn, False, False, 0)
         for label, handler in (
             ("Other provider…", self._on_config_tui),
+            ("Restrict to folder…", self._on_restrict),
             ("Reconnect", self._on_reconnect),
             ("Test", self._on_test_remote),
             ("Remove", self._on_remove_remote),
@@ -671,7 +804,7 @@ class SettingsWindow(Gtk.Window):
         selected = self.selected_remote()
         self.remote_store.clear()
         for name, rtype in rclone.listremotes():
-            self.remote_store.append([name, rtype, "…"])
+            self.remote_store.append([name, rtype, rclone.access_summary(name), "…"])
         self._refresh_remote_combo()
         if selected:
             for row in self.remote_store:
@@ -695,7 +828,7 @@ class SettingsWindow(Gtk.Window):
 
     def _fill_quota(self, results):
         for row in self.remote_store:
-            row[2] = results.get(row[0], "—")
+            row[3] = results.get(row[0], "—")
         return GLib.SOURCE_REMOVE
 
     def selected_remote(self):
@@ -728,18 +861,16 @@ class SettingsWindow(Gtk.Window):
         while default in existing:
             default = "gdrive%d" % index
             index += 1
-        name = _ask_text(
-            self,
-            "Connect Google Drive",
-            "Name for this account (letters, digits, dashes):",
-            default,
-        )
-        if not name:
+        dialog = ConnectAccountDialog(self, default)
+        response = dialog.run()
+        name, options = dialog.values()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK or not name:
             return
         if name in existing:
             _message(self, Gtk.MessageType.ERROR, "A remote named “%s” already exists." % name)
             return
-        argv = rclone.config_create_argv(name, "drive", ["scope=drive"])
+        argv = rclone.config_create_argv(name, "drive", options)
         browser = self.config.get("auth_browser", "")
         if not util.run_in_terminal(util.keep_terminal_open(argv, browser=browser)):
             _message(
@@ -767,6 +898,50 @@ class SettingsWindow(Gtk.Window):
             util.keep_terminal_open(rclone.config_tui_argv(), browser=browser)
         ):
             _message(self, Gtk.MessageType.WARNING, "No terminal found", "Run: rclone config")
+
+    def _on_restrict(self, _btn):
+        remote = self.selected_remote()
+        if not remote:
+            return
+        if rclone.remote_type(remote) != "drive":
+            _message(self, Gtk.MessageType.INFO, "Only Google Drive accounts can be restricted")
+            return
+        _message(
+            self,
+            Gtk.MessageType.INFO,
+            "Pick the only folder this account may touch",
+            "Google has no per-folder permission, so the sign-in always grants access to "
+            "the whole Drive. This pins rclone itself to one folder: from then on it "
+            "cannot see or change anything outside it, whatever this app asks for.",
+        )
+        browser = RemoteBrowser(self, remote)
+        chosen = None
+        if browser.run() == Gtk.ResponseType.OK:
+            chosen = browser.selected_path()
+        browser.destroy()
+        if not chosen:
+            return
+        folder_id = rclone.folder_id(remote, chosen)
+        if not folder_id:
+            _message(
+                self,
+                Gtk.MessageType.ERROR,
+                "Could not read the folder id",
+                "rclone did not return an id for “%s”." % chosen,
+            )
+            return
+        if not rclone.set_root_folder(remote, folder_id):
+            _message(self, Gtk.MessageType.ERROR, "rclone refused to update the account")
+            return
+        _message(
+            self,
+            Gtk.MessageType.INFO,
+            "“%s” is now the root of %s" % (chosen, remote),
+            "Paths in this app are now relative to that folder, so leave “Folder in Drive” "
+            "empty to sync it whole. Undo it with: rclone config update %s root_folder_id \"\""
+            % remote,
+        )
+        self.refresh_remotes()
 
     def _on_reconnect(self, _btn):
         remote = self.selected_remote()
