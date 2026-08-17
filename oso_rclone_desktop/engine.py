@@ -1,5 +1,6 @@
 """Sync engine: one runner per configured folder pair."""
 
+import math
 import os
 import re
 import shlex
@@ -35,7 +36,12 @@ STATE_LABELS = {
     OFFLINE: "Waiting for network",
 }
 
+#: a percentage is meaningless on a handful of files — deleting 1 of 2 is 50%.
+#: The guard is only worth tripping once this many files are actually at stake.
+MIN_ABSOLUTE_DELETES = 5
+
 MAX_LOG_BYTES = 5 * 1024 * 1024
+LOG_GENERATIONS = 2
 TAIL_LINES = 40
 
 _PROGRESS_RE = re.compile(r"Transferred:.*?(\d+)%")
@@ -94,10 +100,19 @@ def _is_safety_abort(text):
 
 
 def _rotate_log(path):
+    """Roll the log at 5 MB, keeping two older generations (15 MB per pair)."""
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.exists(path) and os.path.getsize(path) > MAX_LOG_BYTES:
-            os.replace(path, path + ".1")
+        if not os.path.exists(path) or os.path.getsize(path) <= MAX_LOG_BYTES:
+            return
+        for index in range(LOG_GENERATIONS - 1, 0, -1):
+            older = "%s.%d" % (path, index)
+            if os.path.exists(older):
+                os.replace(older, "%s.%d" % (path, index + 1))
+        os.replace(path, path + ".1")
+        stale = "%s.%d" % (path, LOG_GENERATIONS + 1)
+        if os.path.exists(stale):
+            os.remove(stale)
     except OSError:
         pass
 
@@ -483,6 +498,38 @@ class JobRunner:
             return "Cannot create %s: %s" % (local, exc)
         return ""
 
+    def _count_local_files(self):
+        """Total files under the local root, used to size the delete guard."""
+        total = 0
+        root = self.local_path
+        if not os.path.isdir(root):
+            return 0
+        for dirpath, dirnames, files in os.walk(root):
+            dirnames[:] = [
+                d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+            ]
+            total += len(files)
+            if total > 100000:
+                break
+        return total
+
+    def effective_max_delete(self):
+        """The delete guard as a percentage, floored to a sensible file count.
+
+        Configured as a share of the files, because that is what rclone bisync
+        understands, but raised so that a small folder does not trip the guard
+        over one or two files. Deleting everything in a folder that small is
+        caught by the empty-folder check and undone from the trash anyway.
+        """
+        percent = int(self.job.get("max_delete_percent") or 25)
+        files = int(self.engine.state.job(self.id).get("local_files", 0))
+        if not files:
+            files = self._count_local_files()  # first run, or state from an older version
+        if files > 0:
+            floor = int(math.ceil(MIN_ABSOLUTE_DELETES * 100.0 / files))
+            percent = max(percent, floor)
+        return min(100, percent)
+
     def _count_local_entries(self):
         try:
             with os.scandir(self.local_path) as it:
@@ -576,6 +623,7 @@ class JobRunner:
             saved = self.engine.state.job(self.id)
             saved["local_entries"] = self._count_local_entries()
             saved["local_dirs"] = sorted(self._scan_local_dirs())
+            saved["local_files"] = self._count_local_files()
             self.pending_dir_deletions = []
             self.last_result = self._summarise(tail)
             if resync or self.mode == "bisync":
@@ -899,11 +947,11 @@ class JobRunner:
                 ]
             # bisync reads --max-delete as a PERCENTAGE and aborts the whole run
             # rather than deleting more than that share of the files.
-            if force:
-                # explicit, one-off user approval: bypass the delete guard
+            if force or not job.get("delete_guard", True):
+                # explicit approval, or the guard switched off for this pair
                 argv.append("--force")
             else:
-                argv += ["--max-delete", str(int(job.get("max_delete_percent") or 25))]
+                argv += ["--max-delete", str(self.effective_max_delete())]
             if local_trash:
                 argv += ["--backup-dir1", local_trash]
             if remote_trash:

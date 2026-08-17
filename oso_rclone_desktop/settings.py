@@ -1728,6 +1728,19 @@ class SettingsWindow(Gtk.Window):
         adv.attach(self.f_confirm_dirs, 1, arow, 1, 1)
         arow += 1
 
+        self.f_delete_guard = Gtk.CheckButton(
+            label="Stop a sync that would delete an unusual amount"
+        )
+        self.f_delete_guard.set_tooltip_text(
+            "Switch this off once you trust the setup and the prompts get in the way. "
+            "The trash folder and the folder-deletion question still protect you."
+        )
+        self.f_delete_guard.connect(
+            "toggled", lambda w: self.f_max_delete.set_sensitive(w.get_active())
+        )
+        adv.attach(self.f_delete_guard, 1, arow, 1, 1)
+        arow += 1
+
         self.f_max_delete = Gtk.SpinButton.new_with_range(1, 100, 5)
         self._row(
             adv,
@@ -1735,7 +1748,8 @@ class SettingsWindow(Gtk.Window):
             "Abort if deleting > %",
             self.f_max_delete,
             "If a sync would delete more than this share of the files, the whole run is "
-            "cancelled and nothing is deleted.",
+            "cancelled and nothing is deleted. Raised automatically on small folders, "
+            "where a percentage would trip over one or two files.",
         )
         arow += 1
 
@@ -1913,6 +1927,8 @@ class SettingsWindow(Gtk.Window):
         self.f_safety_backup.set_active(job.get("safety_backup", True))
         self.f_whole_drive.set_active(job.get("allow_whole_drive", False))
         self.f_max_delete.set_value(job.get("max_delete_percent", 25))
+        self.f_delete_guard.set_active(job.get("delete_guard", True))
+        self.f_max_delete.set_sensitive(job.get("delete_guard", True))
         self.f_confirm_dirs.set_active(job.get("confirm_folder_deletions", True))
         self.f_trash_days.set_value(job.get("trash_days", 30))
         self.f_mount_opts.set_text(job.get("mount_options", ""))
@@ -1943,6 +1959,7 @@ class SettingsWindow(Gtk.Window):
                 "skip_gdocs": self.f_skip_gdocs.get_active(),
                 "safety_backup": self.f_safety_backup.get_active(),
                 "allow_whole_drive": self.f_whole_drive.get_active(),
+                "delete_guard": self.f_delete_guard.get_active(),
                 "max_delete_percent": int(self.f_max_delete.get_value()),
                 "confirm_folder_deletions": self.f_confirm_dirs.get_active(),
                 "trash_days": int(self.f_trash_days.get_value()),
