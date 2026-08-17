@@ -156,6 +156,14 @@ class Application:
             ("Open on Google Drive", lambda *_a: self._job_action(job["id"], "web")),
             ("View log", lambda *_a: self._job_action(job["id"], "log")),
         ]
+        if runner is not None and runner.needs_folder_choice:
+            entries.insert(
+                0,
+                (
+                    "⚠ Choose folders to sync…",
+                    lambda *_a: self._job_action(job["id"], "folders"),
+                ),
+            )
         if runner is not None and runner.safety_blocked:
             entries.insert(
                 0,
@@ -199,6 +207,9 @@ class Application:
             if path:
                 os.makedirs(path, exist_ok=True)
                 util.open_path(path)
+        elif action == "folders" and runner:
+            self.open_settings(page=0)
+            self.settings_window._on_choose_folders(None, remote=job.get("remote"))
         elif action == "blocked" and runner:
             self.open_settings(page=1)
             BlockedDeletionsDialog(self.settings_window, runner)
@@ -223,7 +234,8 @@ class Application:
     def update_ui(self):
         overall = self.engine.overall_state()
         signature = tuple(
-            (len(r.conflicts), r.safety_blocked) for r in self.engine.runners
+            (len(r.conflicts), r.safety_blocked, r.needs_folder_choice)
+            for r in self.engine.runners
         )
         if signature != getattr(self, "_conflict_signature", None):
             self._conflict_signature = signature

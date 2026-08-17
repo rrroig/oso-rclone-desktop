@@ -121,6 +121,8 @@ class JobRunner:
         self.safety_blocked = False
         #: folders that vanished locally and need a decision before syncing
         self.pending_dir_deletions = []
+        #: set when the pair points at the root of a whole Drive
+        self.needs_folder_choice = False
 
         self._proc = None
         self._thread = None
@@ -169,6 +171,8 @@ class JobRunner:
         return self._proc is not None and self._proc.poll() is None
 
     def status_text(self):
+        if self.needs_folder_choice:
+            return "Whole Drive selected — choose folders to sync"
         if self.safety_blocked:
             if self.pending_dir_deletions:
                 return "%d deleted folder(s) need a decision" % len(
@@ -363,6 +367,14 @@ class JobRunner:
             self.safety_blocked = True
             self.blocked_deletions = ["(everything under %s)" % self.local_path]
             return False
+        if self._is_whole_drive() and not self.job.get("allow_whole_drive"):
+            self.needs_folder_choice = True
+            self._fail(
+                "This pair is pointed at the whole of “%s”, not a folder inside it. "
+                "Choose the folders to sync — or tick “Sync the entire Drive” if that "
+                "really is what you want." % self.job.get("remote")
+            )
+            return False
         if (
             self.job.get("confirm_folder_deletions", True)
             and self.mode in ("bisync", "sync_up")
@@ -419,6 +431,21 @@ class JobRunner:
         if not stored:
             return []
         return self._topmost(stored - self._scan_local_dirs())
+
+    def _is_whole_drive(self):
+        """True when this pair would sync an entire Drive account, not a folder.
+
+        Pinning the remote with root_folder_id already narrows it down, so that
+        counts as a folder even though the path is empty.
+        """
+        if self.mode == "mount":
+            return False
+        if (self.job.get("remote_path") or "").strip("/"):
+            return False
+        remote = self.job.get("remote")
+        if rclone.remote_type(remote) != "drive":
+            return False
+        return not rclone.root_folder(remote)
 
     def _count_local_entries(self):
         try:

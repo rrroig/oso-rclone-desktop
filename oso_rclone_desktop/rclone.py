@@ -215,6 +215,12 @@ def set_root_folder(remote, folder_id_value):
         return False
 
 
+def has_token(remote):
+    """True once the OAuth dance actually completed for this remote."""
+    conf = _config_dump().get(remote) or {}
+    return bool(conf.get("token"))
+
+
 def root_folder(remote):
     for name, conf in _config_dump().items():
         if name == remote:

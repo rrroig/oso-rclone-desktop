@@ -88,14 +88,21 @@ default is. There is a *Test* button next to it.
 
 ## First run
 
-1. **Accounts → Connect Google Drive…** — a terminal opens, your browser asks you
-   to sign in, and rclone stores the resulting token. Nothing else to configure.
-2. **Synced folders → +** — pick the account, the folder inside Drive (there is a
-   remote folder browser), and the local folder.
-3. **Run first sync…** — for two-way mode, rclone needs one baseline pass. It
-   merges both sides: files that exist on only one side are copied to the other,
-   and for files on both sides the newer one wins. After that, syncs are
-   incremental.
+1. **Accounts → Connect Google Drive…** — choose how much access to grant, then sign in
+   in the browser. rclone stores the resulting token on this machine.
+2. **Choose the folders to sync.** As soon as the account is authorised the app asks
+   which top-level folders you want, and creates one pair per folder — **switched off**,
+   so nothing moves yet. Anything you leave unticked is never read or touched. You can
+   reopen this any time with *Accounts → Choose folders to sync…*
+3. Review a pair, tick **Keep this folder in sync**, press **Apply**.
+4. **Preview (dry run)** to see exactly what would happen, then **Run first sync…** —
+   two-way mode needs one baseline pass. It merges both sides: files present on only one
+   side are copied to the other, and where both have the file the newer one wins. After
+   that, syncs are incremental.
+
+A pair that points at the *whole* Drive rather than a folder inside it refuses to run
+until you tick **Sync the entire Drive** under Advanced. Syncing an entire account pulls
+down everything and makes every deletion riskier, so it has to be asked for.
 
 ## Sync modes
 

@@ -263,6 +263,142 @@ class ConnectAccountDialog(Gtk.Dialog):
         return self.name_entry.get_text().strip(), options
 
 
+class ChooseFoldersDialog(Gtk.Dialog):
+    """After connecting an account: pick which folders to sync, not the lot."""
+
+    def __init__(self, parent, remote, default_base=None):
+        super().__init__(
+            title="What should be synced from %s?" % remote,
+            transient_for=parent,
+            modal=True,
+        )
+        self.remote = remote
+        self.set_default_size(620, 520)
+        self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+        self.ok_btn = self.add_button("Add selected folders", Gtk.ResponseType.OK)
+        self.ok_btn.get_style_context().add_class("suggested-action")
+        self.ok_btn.set_sensitive(False)
+
+        box = self.get_content_area()
+        box.set_border_width(12)
+        box.set_spacing(8)
+        box.add(
+            _label(
+                "Tick the top-level folders of the Drive you want kept in sync. Each one "
+                "becomes its own pair, so you can give them different settings later, and "
+                "everything you leave unticked is never read or touched.",
+                wrap=True,
+            )
+        )
+
+        base_row = Gtk.Box(spacing=6)
+        base_row.add(_label("Keep them under"))
+        self.base_entry = Gtk.Entry(
+            text=default_base or os.path.expanduser("~/GoogleDrive")
+        )
+        self.base_entry.set_hexpand(True)
+        base_row.pack_start(self.base_entry, True, True, 0)
+        browse = Gtk.Button(label="Browse…")
+        browse.connect("clicked", self._on_browse_base)
+        base_row.pack_start(browse, False, False, 0)
+        box.pack_start(base_row, False, False, 0)
+
+        self.store = Gtk.ListStore(bool, str)
+        view = Gtk.TreeView(model=self.store, headers_visible=False)
+        toggle = Gtk.CellRendererToggle()
+        toggle.connect("toggled", self._on_toggled)
+        view.append_column(Gtk.TreeViewColumn("", toggle, active=0))
+        view.append_column(Gtk.TreeViewColumn("", Gtk.CellRendererText(), text=1))
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(view)
+        box.pack_start(scroller, True, True, 0)
+
+        self.status = _label("Reading your Drive…", dim=True)
+        box.pack_start(self.status, False, False, 0)
+
+        self.whole_drive = Gtk.CheckButton(
+            label="Sync the entire Drive instead (everything, including future folders)"
+        )
+        self.whole_drive.connect("toggled", self._on_whole_toggled)
+        box.pack_start(self.whole_drive, False, False, 0)
+
+        self.show_all()
+        self._load()
+
+    def _load(self):
+        def worker():
+            try:
+                proc = subprocess.run(
+                    [rclone.binary(), "lsjson", "--dirs-only", "%s:" % self.remote],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if proc.returncode != 0:
+                    names, error = [], proc.stderr.strip().splitlines()[-1:] or ["failed"]
+                else:
+                    names = sorted(
+                        item["Name"] for item in json.loads(proc.stdout or "[]")
+                    )
+                    error = []
+            except Exception as exc:  # noqa: BLE001 - shown in the dialog
+                names, error = [], [str(exc)]
+            GLib.idle_add(self._fill, names, " ".join(error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fill(self, names, error):
+        self.store.clear()
+        for name in names:
+            if name != util.REMOTE_TRASH:
+                self.store.append([False, name])
+        if error:
+            self.status.set_markup(
+                "<span foreground='red'>%s</span>" % GLib.markup_escape_text(error)
+            )
+        elif names:
+            self.status.set_text("%d folder(s) at the top level." % len(self.store))
+        else:
+            self.status.set_text(
+                "No folders at the top level — the Drive is empty, or this account only "
+                "sees files it created."
+            )
+        return GLib.SOURCE_REMOVE
+
+    def _on_toggled(self, _cell, path):
+        self.store[path][0] = not self.store[path][0]
+        self._update_ok()
+
+    def _on_whole_toggled(self, _btn):
+        self._update_ok()
+
+    def _update_ok(self):
+        any_checked = any(row[0] for row in self.store)
+        self.ok_btn.set_sensitive(any_checked or self.whole_drive.get_active())
+
+    def _on_browse_base(self, _btn):
+        dialog = Gtk.FileChooserDialog(
+            title="Where should the folders live?",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK
+        )
+        dialog.set_create_folders(True)
+        dialog.set_current_folder(os.path.expanduser("~"))
+        if dialog.run() == Gtk.ResponseType.OK:
+            self.base_entry.set_text(dialog.get_filename())
+        dialog.destroy()
+
+    def selection(self):
+        """(base_path, [folder names], whole_drive)."""
+        base = self.base_entry.get_text().strip() or os.path.expanduser("~/GoogleDrive")
+        chosen = [row[1] for row in self.store if row[0]]
+        return base, chosen, self.whole_drive.get_active()
+
+
 class DryRunDialog(Gtk.Dialog):
     """Show exactly what a sync would do, without touching a single file."""
 
@@ -703,6 +839,7 @@ class SettingsWindow(Gtk.Window):
         buttons.pack_start(add_btn, False, False, 0)
         for label, handler in (
             ("Other provider…", self._on_config_tui),
+            ("Choose folders to sync…", self._on_choose_folders),
             ("Restrict to folder…", self._on_restrict),
             ("Reconnect", self._on_reconnect),
             ("Test", self._on_test_remote),
@@ -894,7 +1031,16 @@ class SettingsWindow(Gtk.Window):
             "Wrong browser? Change it under General → Sign-in browser."
             % (browser_label or "your default browser"),
         )
-        GLib.timeout_add_seconds(10, lambda: (self.refresh_remotes(), False)[1])
+        GLib.timeout_add_seconds(10, lambda: (self._after_connect(name), False)[1])
+
+    def _after_connect(self, name):
+        """Once the token exists, ask what to sync instead of assuming everything."""
+        self.refresh_remotes()
+        if name not in {remote for remote, _t in rclone.listremotes()}:
+            return
+        if not rclone.has_token(name):
+            return  # sign-in was cancelled or is still running
+        self._on_choose_folders(None, remote=name)
 
     def _on_config_tui(self, _btn):
         browser = self.config.get("auth_browser", "")
@@ -902,6 +1048,62 @@ class SettingsWindow(Gtk.Window):
             util.keep_terminal_open(rclone.config_tui_argv(), browser=browser)
         ):
             _message(self, Gtk.MessageType.WARNING, "No terminal found", "Run: rclone config")
+
+    def _on_choose_folders(self, _btn, remote=None):
+        remote = remote or self.selected_remote()
+        if not remote:
+            _message(self, Gtk.MessageType.INFO, "Select an account first")
+            return
+        dialog = ChooseFoldersDialog(self, remote)
+        response = dialog.run()
+        base, folders, whole = dialog.selection()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        if self._current_job_id:
+            self._save_current_job(reload_engine=False)
+        created = []
+        if whole:
+            created.append(
+                self.config.add_job(
+                    cfgmod.new_job(
+                        name=remote,
+                        remote=remote,
+                        remote_path="",
+                        local_path=base,
+                        allow_whole_drive=True,
+                        enabled=False,
+                    )
+                )
+            )
+        for folder in folders:
+            created.append(
+                self.config.add_job(
+                    cfgmod.new_job(
+                        name=folder,
+                        remote=remote,
+                        remote_path=folder,
+                        local_path=os.path.join(base, folder),
+                        enabled=False,
+                    )
+                )
+            )
+        if not created:
+            return
+        self.config.save()
+        self.engine.reload()
+        self._current_job_id = created[0]["id"]
+        self.refresh_jobs()
+        self._load_job(created[0]["id"])
+        self.app.update_ui()
+        self.notebook.set_current_page(1)
+        _message(
+            self,
+            Gtk.MessageType.INFO,
+            "Added %d folder(s), switched off" % len(created),
+            "Nothing is transferred yet. Review each one, tick “Keep this folder in sync”, "
+            "press Apply, and use “Preview (dry run)” before the first real sync.",
+        )
 
     def _on_restrict(self, _btn):
         remote = self.selected_remote()
@@ -1129,6 +1331,16 @@ class SettingsWindow(Gtk.Window):
         adv.attach(_label("Safety net", bold=True), 0, arow, 2, 1)
         arow += 1
 
+        self.f_whole_drive = Gtk.CheckButton(
+            label="Sync the entire Drive (not just one folder)"
+        )
+        self.f_whole_drive.set_tooltip_text(
+            "Off by default: syncing a whole Drive account pulls down everything and "
+            "makes deletions far riskier. Prefer one folder per pair."
+        )
+        adv.attach(self.f_whole_drive, 1, arow, 1, 1)
+        arow += 1
+
         self.f_safety_backup = Gtk.CheckButton(
             label="Keep deleted and replaced files in a trash folder"
         )
@@ -1312,6 +1524,7 @@ class SettingsWindow(Gtk.Window):
         self.f_checkers.set_value(job.get("checkers", 8))
         self.f_skip_gdocs.set_active(job.get("skip_gdocs", True))
         self.f_safety_backup.set_active(job.get("safety_backup", True))
+        self.f_whole_drive.set_active(job.get("allow_whole_drive", False))
         self.f_max_delete.set_value(job.get("max_delete_percent", 25))
         self.f_confirm_dirs.set_active(job.get("confirm_folder_deletions", True))
         self.f_trash_days.set_value(job.get("trash_days", 30))
@@ -1342,6 +1555,7 @@ class SettingsWindow(Gtk.Window):
                 "checkers": int(self.f_checkers.get_value()),
                 "skip_gdocs": self.f_skip_gdocs.get_active(),
                 "safety_backup": self.f_safety_backup.get_active(),
+                "allow_whole_drive": self.f_whole_drive.get_active(),
                 "max_delete_percent": int(self.f_max_delete.get_value()),
                 "confirm_folder_deletions": self.f_confirm_dirs.get_active(),
                 "trash_days": int(self.f_trash_days.get_value()),
