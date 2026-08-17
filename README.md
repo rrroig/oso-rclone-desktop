@@ -225,6 +225,12 @@ explanation, because it sounds like handing your Drive to a stranger.
   screen show your own project, gives you the quota to yourself, and lets you revoke the
   whole thing from your own console. The Connect dialog has a field for it.
 - **Revoke any time** at [Google account permissions](https://myaccount.google.com/permissions).
+- **If you do make your own client ID**, set the OAuth consent screen to *In production*.
+  Google expires refresh tokens after 7 days while a project sits in *Testing*, which
+  means signing in again every week. Unverified is fine for personal use — you click past
+  one warning during sign-in. Verification (and its annual security assessment) only comes
+  into play if you publish a client ID for other people to use, which this app never does:
+  it either uses rclone's shared one or the one you supply.
 
 ### Ask for less than everything
 

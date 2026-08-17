@@ -155,7 +155,11 @@ CLIENT_ID_HELP = (
     "everybody using rclone shares the same API quota, which Google throttles. Creating "
     "your own client ID in Google Cloud Console (free) fixes both: the consent screen "
     "shows your own project, the quota is yours alone, and you can revoke it yourself. "
-    "Either way the token is only ever stored on this computer."
+    "Either way the token is only ever stored on this computer.\n\n"
+    "One catch worth knowing: if you leave your Google Cloud project in “Testing” "
+    "publishing status, Google expires the refresh token after 7 days and you have to "
+    "sign in again every week. Set the OAuth consent screen to “In production” — for "
+    "your own personal use it can stay unverified, you just click past a warning once."
 )
 
 
