@@ -123,6 +123,8 @@ class JobRunner:
         self.pending_dir_deletions = []
         #: set when the pair points at the root of a whole Drive
         self.needs_folder_choice = False
+        #: so the "needs a first sync" notice is shown once, not on every check
+        self._resync_notified = False
 
         self._proc = None
         self._thread = None
@@ -402,6 +404,15 @@ class JobRunner:
         if self.mode == "bisync" and not self.resync_done and reason != "resync":
             if not rclone.bisync_workdir_has_listings(self.local_path, self.remote_spec):
                 self._set_state(NEEDS_RESYNC)
+                if not self._resync_notified:
+                    # otherwise an enabled pair sits there silently doing nothing
+                    self._resync_notified = True
+                    self.engine.notify(
+                        self.name,
+                        "Waiting for its first sync. Open the tray menu and choose "
+                        "“Run first sync…” — it merges both sides and deletes nothing.",
+                        "normal",
+                    )
                 return False
         return True
 
@@ -569,6 +580,7 @@ class JobRunner:
             self.last_result = self._summarise(tail)
             if resync or self.mode == "bisync":
                 self.resync_done = True
+                self._resync_notified = False
             self.prune_trash()
             self._persist()
             self._set_state(IDLE)

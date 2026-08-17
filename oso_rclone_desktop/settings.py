@@ -1969,6 +1969,32 @@ class SettingsWindow(Gtk.Window):
     def _on_apply(self, _btn):
         self._save_current_job()
         self.update_job_status()
+        self._offer_first_sync()
+
+    def _offer_first_sync(self):
+        """A freshly enabled pair does nothing until its baseline exists.
+
+        Asking here, where the user just switched it on, beats leaving it idle
+        with a status line nobody reads.
+        """
+        runner = self.engine.runner(self._current_job_id)
+        if not runner or runner.mode != "bisync":
+            return
+        if not runner.job.get("enabled", True) or runner.resync_done:
+            return
+        if runner.last_sync_ts:
+            return
+        if not _confirm(
+            self,
+            "Run the first sync for “%s” now?" % runner.name,
+            "Two-way sync needs one baseline pass before it can run on its own: files "
+            "present on only one side are copied to the other, and where both sides have "
+            "the file the newer one wins. Nothing is deleted.\n\n"
+            "Until this runs, the pair stays idle.",
+        ):
+            return
+        runner.resync_done = False
+        runner.request_sync("resync", resync=True)
 
     def _on_add_job(self, _btn):
         remotes = rclone.listremotes()
