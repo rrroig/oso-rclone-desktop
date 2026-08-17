@@ -78,6 +78,14 @@ On **GNOME**, tray icons only appear if the AppIndicator extension is installed 
 enabled (`gnome-shell-extension-appindicator`); log out and back in after
 installing it. On **Cinnamon** nothing extra is needed.
 
+## Sign-in browser
+
+Signing in to Google happens in a browser, and rclone hands the URL to whatever the
+desktop considers default — which is awkward if your Google session lives in a different
+browser. **General → Sign-in browser** lets you pick one of the installed browsers; the
+app then routes the sign-in (and any Drive link it opens) there, whatever the system
+default is. There is a *Test* button next to it.
+
 ## First run
 
 1. **Accounts → Connect Google Drive…** — a terminal opens, your browser asks you

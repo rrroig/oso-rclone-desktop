@@ -17,6 +17,9 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 INSTALL_RCLONE_CMD = "curl -fsSL https://rclone.org/install.sh | sudo bash"
 
+PROJECT_URL = "https://github.com/rrroig/oso-rclone-desktop"
+ISSUES_URL = PROJECT_URL + "/issues"
+
 STATE_ICONS = {
     eng.IDLE: "emblem-default",
     eng.SYNCING: "emblem-synchronizing",
@@ -737,7 +740,8 @@ class SettingsWindow(Gtk.Window):
             _message(self, Gtk.MessageType.ERROR, "A remote named “%s” already exists." % name)
             return
         argv = rclone.config_create_argv(name, "drive", ["scope=drive"])
-        if not util.run_in_terminal(util.keep_terminal_open(argv)):
+        browser = self.config.get("auth_browser", "")
+        if not util.run_in_terminal(util.keep_terminal_open(argv, browser=browser)):
             _message(
                 self,
                 Gtk.MessageType.WARNING,
@@ -745,17 +749,23 @@ class SettingsWindow(Gtk.Window):
                 "Run this command manually:\n\n%s" % " ".join(argv),
             )
             return
+        browser_label = dict(util.detected_browsers()).get(browser, browser or "")
         _message(
             self,
             Gtk.MessageType.INFO,
-            "Authorise in your browser",
-            "A terminal opened and your browser should ask you to sign in to Google.\n"
-            "When it finishes, close the terminal and press Refresh.",
+            "Authorise in %s" % (browser_label or "your browser"),
+            "A terminal opened and %s should ask you to sign in to Google.\n"
+            "When it finishes, close the terminal and press Refresh.\n\n"
+            "Wrong browser? Change it under General → Sign-in browser."
+            % (browser_label or "your default browser"),
         )
         GLib.timeout_add_seconds(10, lambda: (self.refresh_remotes(), False)[1])
 
     def _on_config_tui(self, _btn):
-        if not util.run_in_terminal(util.keep_terminal_open(rclone.config_tui_argv())):
+        browser = self.config.get("auth_browser", "")
+        if not util.run_in_terminal(
+            util.keep_terminal_open(rclone.config_tui_argv(), browser=browser)
+        ):
             _message(self, Gtk.MessageType.WARNING, "No terminal found", "Run: rclone config")
 
     def _on_reconnect(self, _btn):
@@ -763,7 +773,9 @@ class SettingsWindow(Gtk.Window):
         if not remote:
             return
         argv = [rclone.binary(), "config", "reconnect", "%s:" % remote]
-        util.run_in_terminal(util.keep_terminal_open(argv))
+        util.run_in_terminal(
+            util.keep_terminal_open(argv, browser=self.config.get("auth_browser", ""))
+        )
 
     def _on_test_remote(self, _btn):
         remote = self.selected_remote()
@@ -1538,6 +1550,40 @@ class SettingsWindow(Gtk.Window):
         self.g_metered.connect("toggled", self._on_general_toggle, "sync_on_metered")
         box.pack_start(self.g_metered, False, False, 0)
 
+        box.pack_start(_label("Sign-in browser", bold=True), False, False, 0)
+        box.pack_start(
+            _label(
+                "Signing in to Google happens in a browser. Pick the one where your "
+                "Google account is already logged in — it does not have to be the system "
+                "default.",
+                dim=True,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        browser_row = Gtk.Box(spacing=8)
+        self.g_browser = Gtk.ComboBoxText()
+        self.g_browser.append("", "System default browser")
+        for command, label in util.detected_browsers():
+            self.g_browser.append(command, label)
+        current = self.config.get("auth_browser", "") or ""
+        if current and not any(
+            current == command for command, _l in util.detected_browsers()
+        ):
+            self.g_browser.append(current, "%s (custom)" % current)
+        self.g_browser.set_active_id(current)
+        self.g_browser.connect("changed", self._on_browser_changed)
+        browser_row.pack_start(self.g_browser, False, False, 0)
+        test_btn = Gtk.Button(label="Test")
+        test_btn.set_tooltip_text("Open a Google page with the selected browser")
+        test_btn.connect(
+            "clicked", lambda *_a: util.open_url("https://myaccount.google.com/permissions")
+        )
+        browser_row.pack_start(test_btn, False, False, 0)
+        box.pack_start(browser_row, False, False, 0)
+
         box.pack_start(_label("About", bold=True), False, False, 0)
         parts, raw = rclone.version()
         info = [
@@ -1561,8 +1607,32 @@ class SettingsWindow(Gtk.Window):
             btn = Gtk.Button(label=label)
             btn.connect("clicked", lambda _b, p=path: util.open_path(p))
             links.pack_start(btn, False, False, 0)
+        project = Gtk.LinkButton.new_with_label(PROJECT_URL, "Project page on GitHub")
+        project.connect("activate-link", lambda *_a: (util.open_url(PROJECT_URL), True)[1])
+        links.pack_start(project, False, False, 0)
+        issues = Gtk.LinkButton.new_with_label(ISSUES_URL, "Report an issue")
+        issues.connect("activate-link", lambda *_a: (util.open_url(ISSUES_URL), True)[1])
+        links.pack_start(issues, False, False, 0)
         box.pack_start(links, False, False, 0)
+
+        box.pack_start(
+            _label(
+                "Free software under the MIT licence, by Jose Roig Borrell (github.com/rrroig).\n"
+                "Unofficial client: not affiliated with, endorsed by, or connected to Google LLC.",
+                dim=True,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
         return box
+
+    def _on_browser_changed(self, combo):
+        command = combo.get_active_id() or ""
+        self.config.set("auth_browser", command)
+        self.config.save()
+        util.set_web_browser(command)
 
     def _on_general_toggle(self, widget, key):
         self.config.set(key, widget.get_active())

@@ -45,6 +45,7 @@ class Application:
         self.config = Config()
         self.state = State()
         self.settings_window = None
+        util.set_web_browser(self.config.get("auth_browser", ""))
         self._anim_timer = None
         self._anim_flip = False
 
@@ -205,7 +206,7 @@ class Application:
             self.open_settings(page=1)
             ConflictsDialog(self.settings_window, runner)
         elif action == "web":
-            util.open_path("https://drive.google.com/drive/my-drive")
+            util.open_url("https://drive.google.com/drive/my-drive")
         elif action == "log":
             self.open_settings(page=2)
             if self.settings_window:

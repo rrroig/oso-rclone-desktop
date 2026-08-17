@@ -84,6 +84,7 @@ GLOBAL_DEFAULTS = {
     "notify_on_success": False,
     "sync_on_start": True,
     "sync_on_metered": True,  # sync while on a metered connection
+    "auth_browser": "",       # "" = system default; otherwise a browser command
     "jobs": [],
 }
 

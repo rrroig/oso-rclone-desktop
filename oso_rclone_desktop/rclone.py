@@ -10,12 +10,28 @@ MIN_BISYNC_VERSION = (1, 66, 0)  # --resilient/--recover/--conflict-resolve
 MIN_VERSION = (1, 58, 0)  # bisync exists at all
 
 
+#: a user-level install (~/.local/bin) is common because the distro package is
+#: usually too old, and a desktop session does not always inherit that PATH.
+FALLBACK_PATHS = (
+    os.path.expanduser("~/.local/bin/rclone"),
+    "/usr/local/bin/rclone",
+    "/usr/bin/rclone",
+)
+
+
 def binary():
-    return shutil.which("rclone") or "/usr/bin/rclone"
+    found = shutil.which("rclone")
+    if found:
+        return found
+    for candidate in FALLBACK_PATHS:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return "rclone"
 
 
 def is_installed():
-    return shutil.which("rclone") is not None
+    path = binary()
+    return bool(shutil.which(path) or os.path.isfile(path))
 
 
 def _run(args, timeout=25):
