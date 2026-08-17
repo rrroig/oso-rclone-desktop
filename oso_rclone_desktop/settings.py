@@ -653,6 +653,13 @@ class DryRunDialog(Gtk.Dialog):
         self._run()
 
     def _run(self):
+        problem = self.runner.prepare_local()
+        if problem:
+            self.summary.set_markup(
+                "<span foreground='#c0392b'><b>%s</b></span>"
+                % GLib.markup_escape_text(problem)
+            )
+            return
         argv = self.runner.build_command(
             resync=not self.runner.resync_done and self.runner.mode == "bisync",
             dry_run=True,
@@ -682,11 +689,21 @@ class DryRunDialog(Gtk.Dialog):
         copies = len(re.findall(r"(?m)^.*Skipped copy.*$", clean)) + len(
             re.findall(r"(?m)^.*\bCopied\b.*$", clean)
         )
-        verdict = "finished" if rc == 0 else "reported an error (exit %d)" % rc
-        self.summary.set_markup(
-            "<b>Dry run %s — about %d file(s) would be transferred and %d deleted. "
-            "Nothing was changed.</b>" % (verdict, copies, deletes)
-        )
+        if rc == 0:
+            self.summary.set_markup(
+                "<b>Dry run finished — about %d file(s) would be transferred and %d "
+                "deleted. Nothing was changed.</b>" % (copies, deletes)
+            )
+        else:
+            last = ""
+            for line in reversed(clean.splitlines()):
+                if "ERROR" in line or "CRITICAL" in line:
+                    last = line.split(": ", 1)[-1]
+                    break
+            self.summary.set_markup(
+                "<span foreground='#c0392b'><b>Dry run failed (exit %d).</b> %s</span>"
+                % (rc, GLib.markup_escape_text(util.truncate(last, 120)))
+            )
         return GLib.SOURCE_REMOVE
 
 

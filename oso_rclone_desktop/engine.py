@@ -335,16 +335,10 @@ class JobRunner:
         if not self.job.get("remote"):
             self._fail("No remote configured")
             return False
-        local = self.local_path
-        if not local:
-            self._fail("No local folder configured")
+        problem = self.prepare_local()
+        if problem:
+            self._fail(problem)
             return False
-        if not os.path.isdir(local):
-            try:
-                os.makedirs(local, exist_ok=True)
-            except OSError as exc:
-                self._fail("Cannot create %s: %s" % (local, exc))
-                return False
         monitor = Gio.NetworkMonitor.get_default()
         if not monitor.get_network_available():
             self._set_state(OFFLINE)
@@ -446,6 +440,23 @@ class JobRunner:
         if rclone.remote_type(remote) != "drive":
             return False
         return not rclone.root_folder(remote)
+
+    def prepare_local(self):
+        """Make sure the local side exists. Returns "" or an error message.
+
+        A dry run bypasses the preflight checks, so without this rclone reads a
+        root directory that is not there yet and aborts the whole preview.
+        """
+        local = self.local_path
+        if not local:
+            return "No local folder configured"
+        if os.path.isdir(local):
+            return ""
+        try:
+            os.makedirs(local, exist_ok=True)
+        except OSError as exc:
+            return "Cannot create %s: %s" % (local, exc)
+        return ""
 
     def _count_local_entries(self):
         try:
@@ -915,9 +926,11 @@ class JobRunner:
             argv.append("--drive-skip-gdocs")
         if dry_run:
             argv.append("--dry-run")
+        seen = set()
         for pattern in [util.REMOTE_TRASH + "/**"] + list(job.get("excludes") or []):
             pattern = pattern.strip()
-            if pattern and not pattern.startswith("#"):
+            if pattern and not pattern.startswith("#") and pattern not in seen:
+                seen.add(pattern)
                 argv += ["--exclude", pattern]
         argv += shlex.split(job.get("extra_args") or "")
         return argv
