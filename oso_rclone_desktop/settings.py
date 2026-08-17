@@ -1542,6 +1542,7 @@ class SettingsWindow(Gtk.Window):
         parts, raw = rclone.version()
         info = [
             "%s %s" % (APP_NAME, __version__),
+            "Unofficial Google Drive client — not affiliated with Google LLC.",
             "rclone: %s" % (raw or "not installed"),
             "Tray backend: %s" % self.app.tray.describe(),
             "Desktop: %s" % (util.desktop_name() or "unknown"),

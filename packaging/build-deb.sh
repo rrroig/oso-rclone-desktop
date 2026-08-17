@@ -47,10 +47,12 @@ Depends: python3 (>= 3.8), python3-gi, gir1.2-gtk-3.0, gir1.2-notify-0.7, xdg-ut
 Recommends: rclone (>= 1.66), gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1 | gir1.2-xapp-1.0, fuse3
 Suggests: gnome-shell-extension-appindicator
 Homepage: https://github.com/rrroig/oso-rclone-desktop
-Description: Dropbox-style tray app to sync folders with Google Drive via rclone
+Description: unofficial Google Drive client for Linux, syncing folders via rclone
  Keeps a local folder and a Google Drive folder in sync in the background using
  rclone bisync, with a tray status icon, desktop notifications, conflict review
  and a settings window for accounts, folders and logs.
+ .
+ This is an independent project and is not affiliated with or endorsed by Google LLC.
  .
  Works on GNOME (with the AppIndicator extension) and natively on Cinnamon,
  MATE and Xfce through XApp.

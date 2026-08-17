@@ -1,9 +1,15 @@
 # OSO Rclone Desktop
 
-A Dropbox-style tray application for [rclone](https://rclone.org). Point it at a
-Google Drive account and a local folder, and it keeps both sides in sync in the
-background — with a status icon, desktop notifications, and a settings window for
-accounts, folders and logs.
+**An unofficial Google Drive client for Linux.** Google does not ship a Drive desktop
+client for Linux; this fills that gap with a Dropbox-style tray application built on
+[rclone](https://rclone.org). Point it at a Google Drive account and a local folder and
+it keeps both sides in sync in the background — with a status icon, desktop
+notifications, and a settings window for accounts, folders and logs.
+
+> This project is **not affiliated with, endorsed by, or connected to Google LLC**.
+> "Google Drive" and "Google" are trademarks of Google LLC, used here only to say what
+> this client talks to. It is an independent project that uses Google's public Drive API
+> through rclone, with your own account and your own consent.
 
 Built for **GNOME** and **Cinnamon** (Ubuntu 22.04+ and Linux Mint 22.x), it also
 runs on MATE, Xfce, Budgie and KDE.
@@ -237,8 +243,14 @@ oso-rclone-desktop --version
 sudo apt install ./dist/oso-rclone-desktop_*.deb
 ```
 
-## Licence
+## Licence and trademarks
 
 MIT — see [LICENSE](LICENSE).
 
-rclone itself is a separate project (MIT licensed) and is not bundled here.
+rclone is a separate project (MIT licensed) and is not bundled here; the installer fetches
+it from rclone.org or your distribution.
+
+OSO Rclone Desktop is an independent, unofficial client. Google, Google Drive, GNOME,
+Cinnamon, KDE, Dropbox and Nextcloud are trademarks of their respective owners; they are
+named here only to describe compatibility and inspiration, and none of those projects
+endorse or support this one.
